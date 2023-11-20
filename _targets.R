@@ -14,7 +14,8 @@ tar_option_set(
                "matlabr",
                "tidyverse",
                "magrittr",
-               "glue") # packages that your targets need to run
+               "glue",
+               "rlang") # packages that your targets need to run
   # format = "qs", # Optionally set the default storage format. qs is fast.
   #
   # For distributed computing in tar_make(), supply a {crew} controller
@@ -50,8 +51,7 @@ options(clustermq.template = "clustermq.tmpl")
 # Install packages {{future}}, {{future.callr}}, and {{future.batchtools}} to allow use_targets() to configure tar_make_future() options.
 
 # Run the R scripts in the R/ folder with your custom functions:
-tar_source(c("R/utils/",
-             "R/make-stimlist.R"))
+tar_source(c("R/"))
 # source("other_functions.R") # Source other scripts as needed.
 
 ## other useful global vars ----
@@ -82,11 +82,6 @@ targets_ext <- list(
  tar_target(
    name = matlab_optimize_ga_trial_order,
    command = here::here("matlab", "optimize_ga_trial_order.m"),
-   format = "file"
- ),
- tar_target(
-   name = matlab_optimize_ga_trial_order_naturalistic,
-   command = here::here("matlab", "optimize_ga_trial_order_naturalistic.m"),
    format = "file"
  )
 )
@@ -346,7 +341,7 @@ targets_stimlists_nback <- list(
     command = {
       out_path <- here::here("ignore", "stimlists", "nback", "miniblock_order.csv")
       tibble(miniblock_num = 1:nback_blocks_per_run,
-             filename = sprintf("miniblock%02d.csv", miniblock_num)) %>% 
+             miniblock_file = sprintf("miniblock%02d.csv", miniblock_num)) %>% 
         write_csv(file = out_path)
       
       out_path
@@ -492,9 +487,105 @@ targets_stimlists_naturalistic <- list(
   )
 )
 
+## targets: in-scanner behavioral data ----
+
+map_values_controlled <- tibble(subject = sprintf("sub-%04d", 9901),
+                                run = paste("acq", c("mb4", "mb8", "me"), sep = "-"))
+
+map_values_naturalistic <- tibble(subject = sprintf("sub-%04d", 9901),
+                                  run = paste("acq", c("mb8", "me"), sep = "-"))
+
+targets_beh <- list(
+  tar_map(
+    values = map_values_controlled,
+    tar_target(
+      events_raw_controlled,
+      command = here::here("ignore",
+                           "data",
+                           "beh",
+                           subject,
+                           "raw",
+                           paste0(subject, "_task-controlled_", run, "_raw.csv")),
+      format = "file"
+    ),
+    tar_target(
+      events_controlled,
+      command = parse_events_nback(events_raw_controlled),
+    ),
+    tar_target(
+      events_prespm_controlled,
+      command = {
+        matlab_info <- format_events_matlab(onsets = events_controlled,
+                                            raw_path = events_raw_controlled)
+        with_path(
+          matlab_path,
+          run_matlab_code(matlab_info$matlab_commands)
+        )
+        matlab_info$out_path
+      },
+      format = "file"
+    )
+  ),
+  tar_map(
+    values = map_values_naturalistic,
+    tar_target(
+      events_raw_naturalistic,
+      command = here::here("ignore",
+                           "data",
+                           "beh",
+                           subject,
+                           "raw",
+                           paste0(subject, "_task-naturalistic_", run, "_raw.csv")),
+      format = "file"
+    ),
+    tar_target(
+      events_naturalistic,
+      command = parse_events_naturalistic(events_raw_naturalistic),
+    ),
+    tar_target(
+      events_prespm_naturalistic,
+      command = {
+        matlab_info <- format_events_matlab(onsets = events_naturalistic,
+                                            raw_path = events_raw_naturalistic)
+        with_path(
+          matlab_path,
+          run_matlab_code(matlab_info$matlab_commands)
+        )
+        matlab_info$out_path
+      },
+      format = "file"
+    )
+  )
+)
+
+# targets: fmriprep derivatives of note ----
+
+targets_fmriprep <- list(
+  tar_map(
+    values = map_values_controlled,
+    tar_target(
+      confounds_controlled,
+      command = here::here("ignore", "data", "fmri", "derivatives", "fmriprep-23.0.2", subject, "func",
+                           paste0(subject, "_task-controlled_", run, "_run-01_desc-confounds_timeseries.tsv")),
+      format = "file"
+    )
+  ),
+  tar_map(
+    values = map_values_naturalistic,
+    tar_target(
+      confounds_naturalistic,
+      command = here::here("ignore", "data", "fmri", "derivatives", "fmriprep-23.0.2", subject, "func",
+                           paste0(subject, "_task-naturalistic_", run, "_run-01_desc-confounds_timeseries.tsv")),
+      format = "file"
+    )
+  )
+)
+
 list(
   targets_ext,
   targets_stimuli,
   targets_stimlists_nback,
-  targets_stimlists_naturalistic
+  targets_stimlists_naturalistic,
+  targets_beh,
+  targets_fmriprep
 )

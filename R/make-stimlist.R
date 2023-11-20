@@ -63,6 +63,11 @@ make_stimlist_nback <- function (out_path_glue,
     mutate(condition_num = as.integer(condition_num),
            tr_num = 1:n())
   
+  # filename is going to be reserved in psychopy for writing out the data
+  # so don't overload it, just to be safe
+  metadata %<>%
+    rename(video_id = filename)
+  
   if (!is.null(threatening) & !is.null(predictable)) {
     # NOT putting "attended" in here
     # it will be shown by PsychoPy at the beginning of each block
