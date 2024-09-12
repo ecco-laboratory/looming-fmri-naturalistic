@@ -2,7 +2,7 @@
 % clear Models, clear MM
 
 %% load libraries, I think
-addpath(genpath('/home/data/eccolab/Code/GitHub/spm12'));
+addpath('/home/data/eccolab/Code/GitHub/spm12');
 addpath(genpath('/home/data/eccolab/Code/GitHub/CanlabCore/CanlabCore'));
 
 % User-Specified Parameters
