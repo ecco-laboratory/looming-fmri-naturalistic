@@ -1,14 +1,52 @@
 # various helper functions for converting psychopy data to SPM-able events ----
 
-parse_events_naturalistic <- function (file_path) {
+## calculating behavioral performance. almost like we care about cognition ----
+
+parse_beh_nback <- function (file_path) {
   raw <- read_csv(file_path)
-  # CHANGE THIS WHEN THE LOG FILES EXPORT TRIGGER TIME PROPERLY -cry-
-  t_start <- raw$cross_iti.started[1] - 8
+  
+  out <- raw %>% 
+    # Drop the wait-for-trigger screen and last row of ISI before the end-of-run screen
+    filter(!is.na(miniblock_file)) %>% 
+    # we want both of the RT measures to start from the beginning of the video display
+    mutate(video_late_resp.rt = video_late_resp.rt + video_late_resp.started - video_resp.started,
+                  rt = coalesce(video_resp.rt, video_late_resp.rt)) %>% 
+      select(run_num = run,
+             threatening,
+             attended,
+             miniblock_num,
+             animal_type,
+             hemifield,
+             direction, 
+             rt,
+             ends_with("rating")
+      ) %>% 
+      group_by(miniblock_num) %>% 
+      mutate(attended = attended[1],
+             across(ends_with("rating"), \(x) x[length(x)])) %>% 
+      mutate(attended = case_match(attended, "LOCATION" ~ "hemifield", "ANIMAL" ~ "animal"),
+             resp_expected = if_else(attended == "hemifield",
+                                     hemifield == lag(hemifield),
+                                     animal_type == lag(animal_type)),
+             resp_expected = coalesce(resp_expected, FALSE)) %>% 
+      ungroup()
+  
+  return (out)
+  
+}
+
+## actually calculating event timing for onsets ----
+
+parse_events_naturalistic <- function (file_path, conditions_base, tr_duration, n_trs) {
+  raw <- read_csv(file_path)
+  # in this PsychoPy task, the routines are set up where ITI occurs "before" each video
+  # so the first ITI is triggered by the scanner and covers the 8 second discard period
+  t_start <- raw$cross_iti.started[2] + (8 %/% tr_duration)*tr_duration
   
   onsets <- raw %>% 
     # Drop the last row of ISI before the end-of-run screen
-    filter(!is.na(filename)) %>% 
-    select(filename, 
+    filter(!is.na(video_id)) %>% 
+    select(video_id, 
            onset_video = video.started, # Video onset
            offset_video = cross_isi.started, # Changing video offset, backed out from subsequent fixation onset (idiotic but it'll work)
            onset_ratings = mood_pleasantness_slider.started # Rating screens onset
@@ -23,35 +61,51 @@ parse_events_naturalistic <- function (file_path) {
     # Ratings all go into the same condition though
     mutate(onset = onset - t_start,
            condition = if_else(condition == "video",
-                               str_sub(filename, end = -5L),
+                               str_sub(video_id, end = -5L),
                                condition)) %>% 
-    select(-filename)
+    # we need to get information from the main stimlist
+    # in order to patch it into the condition names
+    # to send it into the SPM.mat so that contrasts can be set in matlab
+    left_join(conditions_base %>% select(video, animal_type, has_loom), 
+              by = c("video_id" = "video")) %>% 
+    mutate(condition = if_else(condition != "ratings", glue("{animal_type}_loom{has_loom}_{condition}"), condition)) %>% 
+    # Just in case there are any onsets that are after the scan actually ended
+    # remove them because they will end up creating zero-regressors later which we don't want
+    filter(onset + duration < tr_duration * n_trs) %>% 
+    select(-video_id)
   
   return (onsets)
 }
 
-parse_events_nback <- function (file_path) {
+parse_events_nback <- function (file_path, tr_duration, n_trs) {
   raw <- read_csv(file_path)
   
-  # CHANGE THIS WHEN THE LOG FILES EXPORT TRIGGER TIME PROPERLY -cry-
-  t_start <- raw$instruct_text.started[2] - 8
+  # IMPORTANT: At the SPM modeling stage, the first discarded volumes (approx 8 s)
+  # are TOTALLY IGNORED FROM THE TIMESERIES
+  # so time 0 should ideally be immediately after the PsychoPy 8 s wait
+  # In the event that the TR length does not divide evenly into 8,
+  # we still need time 0 to line up with the first kept TR,
+  # which may be slightly less than 8 s
+  # so calculate the number of skipped TRs and get the wait offset from that
+  t_start <- raw$wait_screen.started[2] + (8 %/% tr_duration)*tr_duration
   
   onsets <- raw %>% 
     # Drop the wait-for-trigger screen and last row of ISI before the end-of-run screen
-    filter(!is.na(filename)) %>% 
+    filter(!is.na(miniblock_file)) %>% 
     select(run_num = run,
            threatening,
+           attended,
            miniblock_num,
            animal_type,
            hemifield,
            direction, 
-           onset_video = video.started, # Video onset
+           onset_video = video_resp.started, # Video onset. Use the response onset bc video.started doesn't take the 1 s pause into account
            onset_ratings = mood_pleasantness_slider.started # Rating screens onset
     ) %>% 
-    # temporary reconstruction:
-    # for odd run nums, location is on the odd miniblocks
-    # for even run nums, location is on the even miniblocks
-    mutate(attended = if_else(run_num %% 2 == miniblock_num %% 2, "hemifield", "animal")) %>% 
+    group_by(miniblock_num) %>% 
+    mutate(attended = attended[1]) %>% 
+    ungroup() %>% 
+    mutate(attended = case_match(attended, "LOCATION" ~ "hemifield", "ANIMAL" ~ "animal")) %>% 
     unite("condition", c(attended, animal_type, hemifield, direction), sep = "_", na.rm = TRUE) %>% 
     mutate(onset = coalesce(onset_video, onset_ratings),
            onset = onset - t_start,
@@ -59,7 +113,8 @@ parse_events_nback <- function (file_path) {
            condition = fct_recode(condition, ratings = "animal", ratings = "hemifield"),
            duration = if_else(condition == "ratings",
                               12,
-                              2)) %>% 
+                              1.5)) %>% 
+    filter(onset + duration < tr_duration * n_trs) %>% 
     select(condition, onset, duration)
   
   # right now, just for the pilot data, I'm delaying this TODO:
@@ -69,15 +124,61 @@ parse_events_nback <- function (file_path) {
   
 }
 
-format_events_matlab <- function (onsets, raw_path) {
+realign_onset_end_spike <- function (onsets, add_realign = 0) {
+  # only realigns the task stimuli, not the ratings
+  # optionally realigns with an additional offset (e.g. to estimate FIR before the offset)
+  out <- onsets %>% 
+    mutate(offset = onset + duration + add_realign) %>% 
+    mutate(onset2 = if_else(condition == "ratings",
+                            onset,
+                            offset),
+           duration2 = if_else(condition == "ratings",
+                               duration,
+                               0)) %>% 
+    select(condition, onset = onset2, duration = duration2)
+  
+  return (out)
+}
+
+# for the FIR analysis, we will just look at looming vs non looming
+# so that we can try to power up the basis functions
+# so that means that the conditions need to be relabeled at the onsets/level 1 phase
+# and not condensed at the contrast phase
+relabel_onset_looming_naturalistic <- function (onsets, conditions_base) {
+ # only naturalistic needs conditions_base
+  # bc nback has this information in the video names
+    conditions <- conditions_base %>% 
+      select(video, has_loom) %>% 
+      mutate(video = str_remove(video, ".mp4"))
+    
+    out <- onsets %>% 
+      left_join(conditions,
+                by = c("condition" = "video")) %>% 
+      mutate(condition2 = fct_recode(as.character(has_loom),
+                                         "looming" = "1",
+                                         "receding" = "0"),
+             condition2 = coalesce(condition2, "ratings"),
+             condition2 = fct_relevel(condition2, "looming", "receding")) %>% 
+      select(condition = condition2, onset, duration)
+    
+    return (out)
+}
+
+relabel_onset_looming_nback <- function (onsets) {
+  onsets %>% 
+    mutate(condition = as.character(condition), 
+           condition2 = case_when(endsWith(condition, "looming") ~ "looming", 
+                                  endsWith(condition, "receding") ~ "receding", 
+                                  TRUE ~ "ratings"),
+           condition2 = fct_relevel(condition2, "looming", "receding")) %>% 
+    select(condition = condition2, onset, duration)
+}
+
+format_events_matlab <- function (onsets, raw_path, onset_type) {
   # expects long by trial with 3 columns: condition, onset, duration
   onsets %<>%
-    chop(cols = c(onset, duration)) %>% 
-    mutate(duration = round(map_dbl(duration, unique), digits = 3),
-           onset_char = map_chr(onset, \(x) x %>% 
-                                  round(digits = 3) %>% 
-                                  rvec_to_matlab(row = TRUE) %>% 
-                                  str_remove(";"))) %>% 
+    mutate(across(where(is.numeric), \(x) round(x, digits = 3))) %>% 
+    chop(cols = onset) %>% 
     # So that across runs, the conditions get output in the same order
     arrange(condition)
   
@@ -91,21 +192,21 @@ format_events_matlab <- function (onsets, raw_path) {
   # Where each L1 cell corresponds to a condition
   # and then within each cell there's a column for onsets and a column for durations?
   
+  out_suffix <- glue("model-{onset_type}_onsets.mat")
   # The easiest/laziest way to retain the naming structure hehe
   out_mat_path <- raw_path %>% 
     # do NOT write this in the raw folder anymore
     str_remove("/raw") %>% 
     # replace the file suffixes
-    str_remove("raw.csv") %>% 
-    paste0("onsets.mat")
+    # use str_sub now to strip off the psychopy date-time suffix
+    # which should be formatted with a fixed nchar
+    str_sub(end = -28L) %>% 
+    str_c(out_suffix)
   
   matlab_commands <- c(
-    rvec_to_matlabcell(onsets$condition, matname = "names", transpose = TRUE),
-    rvec_to_matlabcell(onsets$onset_char, matname = "onsets", transpose = TRUE) %>% 
-      # extra formatting idiocy bc these rvec_to_matlab* functions weren't designed to nest
-      str_remove_all("'"),
-    rvec_to_matlabcell(onsets$duration, matname = "durations", transpose = TRUE) %>% 
-      str_remove_all("'"),
+    rvec_to_matlabcell(onsets$condition, sep = ",", matname = "names"),
+    rvec_to_matlabcell(onsets$onset, sep = ",", matname = "onsets"),
+    rvec_to_matlabcell(onsets$duration, sep = ",", matname = "durations"),
     call_function("save",
                   args = c(out_mat_path,
                            "names", "onsets", "durations") %>% 
