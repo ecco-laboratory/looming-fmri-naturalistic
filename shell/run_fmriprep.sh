@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-#SBATCH --nodelist=node4
+#SBATCH --nodelist=node1,node4
 #SBATCH --time=14-00:00:00
-#SBATCH --mem=32G
+#SBATCH --mem=48G
 #SBATCH --partition month-long  # Queue names you can submit to
 # Outputs ----------------------------------
 #SBATCH -o /home/%u/log/%x-%A-%a.out
@@ -13,7 +13,7 @@
 
 STUDY_DIR="/home/mthieu/Repos/looming-fmri/"
 BIDS_DIR="${STUDY_DIR}ignore/data/fmri/"
-DERIVS_DIR="derivatives/fmriprep-23.0.2"
+DERIVS_DIR="derivatives/fmriprep-23.1.4"
 
 # Prepare some writeable bind-mount points.
 TEMPLATEFLOW_HOST_HOME=$HOME/.cache/templateflow
@@ -27,7 +27,7 @@ mkdir -p ${BIDS_DIR}/${DERIVS_DIR}
 
 # Designate a templateflow bind-mount point
 export SINGULARITYENV_TEMPLATEFLOW_HOME="/templateflow"
-SINGULARITY_CMD="singularity run --cleanenv --bind ${BIDS_DIR}:/data --bind /home/data/shared/SingularityImages/:/fslicensepath --bind ${TEMPLATEFLOW_HOST_HOME}:${SINGULARITYENV_TEMPLATEFLOW_HOME}  --bind ${STUDY_DIR}/ignore/tmp:/work  /home/data/shared/SingularityImages/fmriprep-23.0.2.simg"
+SINGULARITY_CMD="singularity run --cleanenv --bind ${BIDS_DIR}:/data --bind /home/data/shared/SingularityImages/:/fslicensepath --bind ${TEMPLATEFLOW_HOST_HOME}:${SINGULARITYENV_TEMPLATEFLOW_HOME}  --bind ${STUDY_DIR}/ignore/tmp:/work  /home/data/shared/SingularityImages/fmriprep-23.1.4.simg"
 
 echo Current slurm array task ID: $SLURM_ARRAY_TASK_ID
 # Parse the participants.tsv file and extract one subject ID from the line corresponding to this SLURM task.
@@ -39,6 +39,8 @@ echo Running for subject: $subject
 
 # Compose the command line
 #cmd="${SINGULARITY_CMD} /data /data/${DERIVS_DIR} participant --participant-label $subject --fs-license-file /fslicensepath/license.txt --fs-no-reconall -w /home/kealfar/work/ -vv --nprocs 32 --omp-nthreads 8  --output-spaces MNI152NLin2009cAsym:res-2 anat --verbose --low-mem --skip-bids-validation --me-output-echos"
+# flags you may or may not want to use:
+# --fs-no-reconall (default would be to run it)
 cmd="${SINGULARITY_CMD} /data /data/${DERIVS_DIR} participant --participant-label $subject --fs-license-file /fslicensepath/license.txt --fs-no-reconall -w /work/ -vv --nprocs 32 --omp-nthreads 8  --output-spaces MNI152NLin2009cAsym:res-2 anat fsaverage5 --verbose --low-mem --me-output-echos"
 
 
