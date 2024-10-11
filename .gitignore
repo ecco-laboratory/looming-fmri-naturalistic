@@ -162,4 +162,4 @@ cython_debug/
 .Rhistory
 
 # My big folder of stimuli and data and shit that shouldn't get tracked
-ignore
+ignore/
