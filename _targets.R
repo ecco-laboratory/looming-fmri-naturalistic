@@ -6,7 +6,8 @@
 # Load packages required to define the pipeline:
 library(targets)
 library(tarchetypes)
-library(tibble)
+library(tidyverse)
+library(rlang)
 
 # Set target options:
 tar_option_set(
@@ -15,7 +16,8 @@ tar_option_set(
                "tidyverse",
                "magrittr",
                "glue",
-               "rlang") # packages that your targets need to run
+               "rlang",
+               "qualtRics") # packages that your targets need to run
   # format = "qs", # Optionally set the default storage format. qs is fast.
   #
   # For distributed computing in tar_make(), supply a {crew} controller
@@ -41,6 +43,11 @@ tar_option_set(
   # Set other options as needed.
 )
 
+# just starting with the suggested 2 workers for... safety I guess. Please don't explode your memory request!
+# tar_option_set(
+#   controller = crew::crew_controller_local(workers = 2)
+# )
+
 # tar_make_clustermq() is an older (pre-{crew}) way to do distributed computing
 # in {targets}, and its configuration for your machine is below.
 options(clustermq.scheduler = "slurm")
@@ -57,7 +64,7 @@ tar_source(c("R/"))
 ## other useful global vars ----
 # My dear little conda env
 conda_path <- "/home/mthieu/Repos/emonet-py/env/bin"
-matlab_path <- "/opt/MATLAB/2022a/bin"
+matlab_path <- "/opt/MATLAB/R2024a/bin"
 # fMRI parameters that pass into multiple targets
 tr_length <- 2 # seconds
 nback_rating_duration <- 12 # tr units
@@ -68,10 +75,12 @@ nback_block_threatenings <- c("dog", "frog", "spider", "above", "below")
 
 ## targets: scripts in other project folders ----
 
+ratings_ck2017 <- tar_read(ratings_ck2017, store = "/home/mthieu/Repos/emonet-py/ignore/_targets/subjective")
+
 targets_ext <- list(
  tar_target(
    name = py_make_looming_video,
-   command = "/home/mthieu/Repos/emonet-py/python/myutils/make_looming_video.py",
+   command = "/home/mthieu/Repos/emonet-py/python/make_looming_video.py",
    format = "file"
  ),
  tar_target(
@@ -83,10 +92,32 @@ targets_ext <- list(
    name = matlab_optimize_ga_trial_order,
    command = here::here("matlab", "optimize_ga_trial_order.m"),
    format = "file"
+ ),
+ tar_target(
+   name = matlab_spmbatch_smooth,
+   command = here::here("matlab", "smooth.m"),
+   format = "file"
+ ),
+ tar_target(
+   name = matlab_spmbatch_spec_est_level1,
+   command = here::here("matlab", "specify_estimate_level1.m"),
+   format = "file"
+ ),
+ tar_target(
+   name = matlab_spmbatch_spec_est_level2,
+   command = here::here("matlab", "specify_estimate_level2.m"),
+   format = "file"
+ ),
+ tar_target(
+   name = matlab_spmbatch_voi,
+   command = here::here("matlab", "voi_pilot_subject.m"),
+   format = "file"
  )
 )
 
 ## targets: looming stimuli of various kinds ----
+
+folder_videos_naturalistic <- "/home/data/eccolab/SPLaT/stimuli/youtube"
 
 targets_stimuli <- list(
   tar_target(
@@ -97,8 +128,11 @@ targets_stimuli <- list(
   ),
   tar_target(
     name = videos_controlled,
-    command = with_path("/home/mthieu/Repos/emonet-py/env/bin", {
-      out_path <- here::here("ignore", "stimuli", "videos", "controlled")
+    command = with_path(conda_path, {
+      
+      # local ignore/stimuli/videos/controlled is symlinked to this folder as well
+      # but write to the server-wide folder to share out permissions
+      out_path <- "/home/data/eccolab/SPLaT/stimuli/homemade/"
       
       # generate _almost_ every crossing combination
       # but we only need reversed middle-near looms, not reversed middle-far recedes 
@@ -130,13 +164,19 @@ targets_stimuli <- list(
       }
       # print the path to the output videos
       list.files(out_path,
+                 pattern = "mp4",
                  full.names = TRUE)
     }),
     format = "file"
   ),
   tar_target(
-    name = folder_videos_naturalistic,
-    command = "/home/data/eccolab/looming/stimuli/youtube/",
+    name = qualtrics.ids_videos_controlled,
+    command = here::here("ignore", "stimuli", "videos", "controlled_qualtrics_ids.csv"),
+    format = "file"
+  ),
+  tar_target(
+    name = videos_naturalistic,
+    command = list.files(folder_videos_naturalistic, pattern = ".mp4", full.names = TRUE),
     format = "file"
   ),
   tar_target(
@@ -204,18 +244,27 @@ targets_stimuli <- list(
   tar_target(
     name = metadata_videos_naturalistic,
     command = {
-      with_path(conda_path, 
-                system2("python",
-                        args = c(py_get_video_metadata,
-                                 paste("--path", folder_videos_naturalistic)))
-      )
-      paste0(folder_videos_naturalistic, "metadata.csv")
+      out_path <- file.path(folder_videos_naturalistic, "metadata.csv")
+      
+      video_paths <- paste(videos_naturalistic, collapse = " ")
+      
+      with_path(conda_path,
+                code = system2("python",
+                               args = c(py_get_video_metadata,
+                                        paste("-i", video_paths),
+                                        paste("-o", out_path))))
+      out_path
     },
     format = "file"
   ),
   tar_target(
     name = annotations_videos_naturalistic,
-    command = "/home/data/eccolab/looming/stimuli/youtube/annotations.csv",
+    command = file.path(folder_videos_naturalistic, "annotations.csv"),
+    format = "file"
+  ),
+  tar_target(
+    name = ck2017_imagenet_categories,
+    command = here::here("ignore", "data", "norm", "ck2017_imagenet_categories.csv"),
     format = "file"
   )
 )
@@ -434,7 +483,7 @@ targets_stimlists_naturalistic <- list(
                   mutate(video_id = paste0(video_id, ".mp4")) %>% 
                   rename(animal_type = animal), 
                 by = c("video" = "video_id")) %>% 
-      filter(animal_type %in% c("dog", "frog", "spider"), is.na(ignore)) %>% 
+      filter(animal_type %in% c("dog", "frog", "spider", "cat", "food"), is.na(ignore)) %>% 
       select(-ignore)
   ),
   tar_map(
@@ -448,27 +497,31 @@ targets_stimlists_naturalistic <- list(
                                     paste0("stimlist_{sprintf('block%02d', block_num)}_",
                                            order_num, ".csv"))
         
-        allowed_isis <- 6:16
+        allowed_isis <- 6:14 # this seems to land us at 91 stimuli when multiplied into that poisson pseudo randomizer below
         
-        naturalistic_rating_duration <- 4*3 + 8 # 3 ratings plus 8-second washout
         onsets <- stims_naturalistic %>% 
-          rename(filename = video) %>% 
-          # generate pseudo-random ISIs to jitter between video offset and rating onset
+          # must not be called "filename" bc that is used by psychopy to name the data files
+          rename(video_id = video) %>% 
+          # generate pseudo-random ISIs to jitter between videos
           # these are pre-generated to have a fixed mean and then shuffled in order
-          mutate(isi = sample(rep(allowed_isis,
+          mutate(iti_before = sample(rep(allowed_isis,
                                   times = round(n() * dpois(allowed_isis, lambda = 7) / sum(dpois(allowed_isis, lambda = 7)))))) %>% 
           # THIS randomizes the trial order
           # Since we're basically doing an old-school slow event related design anyway,
           # There is no added utility to using optimizeGA
           slice_sample(prop = 1) %>% 
-          mutate(# need to add in the constant rating interval per trial
-                 # it nonlinearly changes the pct elapsed bc videos vary in length
-                 pct_task_elapsed = cumsum(duration + isi + naturalistic_rating_duration) / max(cumsum(duration + isi + naturalistic_rating_duration)),
-                 block_num = case_when(pct_task_elapsed < 0.33 ~ 1L,
-                                       pct_task_elapsed < 0.66 ~ 2L,
+          mutate(# 2024-08-26: NO LONGER RATING INSIDE SCANNER (to save time)
+                 pct_task_elapsed = cumsum(duration + iti_before) / sum(duration + iti_before),
+                 block_num = case_when(pct_task_elapsed < 0.34 ~ 1L,
+                                       pct_task_elapsed < 0.67 ~ 2L,
                                        TRUE ~ 3L)) %>% 
           group_by(block_num) %>% 
-          mutate(trial_num = 1:n()) %>% 
+          mutate(trial_num = 1:n(),
+                 # because these ISIs set the interval _before_ the given video,
+                 # manually go in and make sure the first one is always 8
+                 # so that will serve as the discarded acquisitions time
+                 # the last post-stim ISI is set as a constant in the PsychoPy task. don't worry about it here
+                 iti_before = if_else(trial_num == 1, 8L, iti_before)) %>% 
           ungroup()
         
         onsets %>% 
@@ -487,36 +540,86 @@ targets_stimlists_naturalistic <- list(
   )
 )
 
-## targets: in-scanner behavioral data ----
 
-map_values_controlled <- tibble(subject = sprintf("sub-%04d", 9901),
-                                run = paste("acq", c("mb4", "mb8", "me"), sep = "-"))
+# targets: maps out by task x subject x run ----
 
-map_values_naturalistic <- tibble(subject = sprintf("sub-%04d", 9901),
-                                  run = paste("acq", c("mb8", "me"), sep = "-"))
+path_here_fmri <- c("ignore", "data", "fmri")
+path_here_derivatives <- c(path_here_fmri, "derivatives", "fmriprep-23.1.4")
+tr_duration_mb8 <- 0.492
+disdaq_duration <- 8 # in seconds! CONSTANT PER PHIL!
+n_trs_kept_controlled <- 1001
+# for pilots sub-9902-9904, this was 1407
+# but before sub-0001, removed in-scanner ratings so the run is now shorter
+n_trs_kept_naturalistic <- 989
 
-targets_beh <- list(
+map_values_9901 <- crossing(task = paste("task", c("controlled", "naturalistic"), sep = "-"),
+                     subject = sprintf("sub-%04d", 9901),
+                     run = paste("acq", c("mb4", "mb8", "me"), sep = "-")) %>% 
+  filter(!(task == "task-naturalistic" & run == "acq-mb4")) %>% 
+  mutate(tr_duration = map2_dbl(task, run, \(x, y) inject(here::here(!!!path_here_fmri, 
+                                                           paste(x, y, "bold.json", sep = "_"))) %>% 
+                                 jsonlite::fromJSON() %>% 
+                                 pluck("RepetitionTime")))
+
+map_values_pilot <- crossing(task = c("controlled", "naturalistic"),
+                       subject = 9902:9904,
+                       run = 1:5) %>% 
+  filter(!(task == "naturalistic" & run > 3),
+         !(subject == 9902 & ((task == "controlled" & run > 3) | (task == "naturalistic" & run > 2))) & !(subject == 9904 & task == "naturalistic")) %>% 
+  mutate(task = paste("task", task, sep = "-"),
+         subject = sprintf("sub-%04d", subject),
+         run = sprintf("run-%02d", run))
+
+map_values <- crossing(task = c("controlled", "naturalistic"),
+                             subject = 1,
+                             run = 1:5) %>% 
+  filter(!(task == "naturalistic" & run > 3)) %>% 
+  mutate(task = paste("task", task, sep = "-"),
+         subject = sprintf("sub-%04d", subject),
+         run = sprintf("run-%02d", run))
+
+targets_fmri <- list(
   tar_map(
-    values = map_values_controlled,
+    unlist = FALSE,
+    values = map_values,
     tar_target(
-      events_raw_controlled,
-      command = here::here("ignore",
-                           "data",
-                           "beh",
-                           subject,
-                           "raw",
-                           paste0(subject, "_task-controlled_", run, "_raw.csv")),
+      events_raw,
+      command = list.files(here::here("ignore", "data", "beh", subject, "raw"),
+                           pattern = paste(subject, task, run, sep = "_"),
+                           full.names = TRUE),
       format = "file"
     ),
     tar_target(
-      events_controlled,
-      command = parse_events_nback(events_raw_controlled),
+      events_boxcar,
+      command = {
+        # n_trs fed in here is not including any TRs during the 8-second wait period
+        # it counts from the first TR whose acquisition crosses the 8-second boundary
+        if (task == "task-controlled") {
+          parse_events_nback(events_raw, tr_duration = tr_duration_mb8, n_trs = n_trs_kept_controlled)
+        } else if (task == "task-naturalistic") {
+          parse_events_naturalistic(events_raw, stims_naturalistic, tr_duration = tr_duration_mb8, n_trs = n_trs_kept_naturalistic)
+        }
+      },
     ),
     tar_target(
-      events_prespm_controlled,
+      confounds,
+      command = inject(here::here(!!!path_here_derivatives, subject, "func",
+                                  paste(subject, task, run, "desc-confounds_timeseries.tsv", sep = "_"))),
+      format = "file"
+    ),
+    tar_target(
+      confounds_prespm,
+      command = discard_confound_start(file_path = confounds,
+                                       tr_duration = tr_duration_mb8,
+                                       disdaq_duration = disdaq_duration),
+      format = "file"
+    ),
+    tar_target(
+      events_prespm_boxcar,
       command = {
-        matlab_info <- format_events_matlab(onsets = events_controlled,
-                                            raw_path = events_raw_controlled)
+        matlab_info <- format_events_matlab(onsets = events_boxcar,
+                                            raw_path = events_raw,
+                                            onset_type = "boxcar")
         with_path(
           matlab_path,
           run_matlab_code(matlab_info$matlab_commands)
@@ -524,60 +627,549 @@ targets_beh <- list(
         matlab_info$out_path
       },
       format = "file"
-    )
-  ),
-  tar_map(
-    values = map_values_naturalistic,
+    ),
     tar_target(
-      events_raw_naturalistic,
-      command = here::here("ignore",
-                           "data",
-                           "beh",
-                           subject,
-                           "raw",
-                           paste0(subject, "_task-naturalistic_", run, "_raw.csv")),
+      bold_gz,
+      command = inject(here::here(!!!path_here_derivatives, subject, "func",
+                                  paste(subject, task, run, "space-MNI152NLin2009cAsym_res-2_desc-preproc_bold.nii.gz", sep = "_"))),
       format = "file"
     ),
     tar_target(
-      events_naturalistic,
-      command = parse_events_naturalistic(events_raw_naturalistic),
+      bold,
+      command = {
+        system2("gunzip",
+                args = c("-k",
+                         bold_gz))
+        
+        str_remove(bold_gz, ".gz")
+      },
+      format = "file"
     ),
     tar_target(
-      events_prespm_naturalistic,
-      command = {
-        matlab_info <- format_events_matlab(onsets = events_naturalistic,
-                                            raw_path = events_raw_naturalistic)
-        with_path(
-          matlab_path,
-          run_matlab_code(matlab_info$matlab_commands)
-        )
-        matlab_info$out_path
-      },
+      bold_smoothed.4mm,
+      command = spm_smooth(bold_path = bold,
+                           n_trs = nrow(read_tsv(confounds)),
+                           kernel = 4,
+                           script = matlab_spmbatch_smooth),
       format = "file"
     )
   )
 )
 
-# targets: fmriprep derivatives of note ----
+# targets: maps out by task x subject (combines across run) ----
 
-targets_fmriprep <- list(
-  tar_map(
-    values = map_values_controlled,
-    tar_target(
-      confounds_controlled,
-      command = here::here("ignore", "data", "fmri", "derivatives", "fmriprep-23.0.2", subject, "func",
-                           paste0(subject, "_task-controlled_", run, "_run-01_desc-confounds_timeseries.tsv")),
+# this helper function creates combined target name & input target pairs
+# for tar_eval to combine across some, but not all, targets
+# should be usable for combining across run but keeping task and subject
+# and then combining across subject but keeping task
+make_eval_values <- function (values, summarize_fmt, target_prefix) {
+  values %>% 
+    mutate(input_names = map2(suffix, combine_vals, \(x, y) syms(sprintf(glue::glue("%s_%s_{summarize_fmt}"), target_prefix, x, y))),
+           target_name = syms(paste(target_prefix, suffix, sep = "_"))) %>% 
+    select(target_name, input_names)
+}
+
+map_values_across.run <- map_values %>% 
+  # so that the n column counts the number of valid runs per this subject/task
+  # use the n column later to populate the valid target names to combine
+  count(task, subject) %>% 
+  unite(suffix, task, subject, remove = FALSE) %>% 
+  mutate(suffix = str_replace_all(suffix, "-", "."),
+         combine_vals = map(n, \(x) 1:x)) %>% 
+  select(-n)
+
+targets_fmri_level1 <- list(
+  tar_eval(
+    expr = tar_target(
+      target_name,
+      command = vctrs::vec_c(!!!input_names),
       format = "file"
-    )
+    ),
+    values = make_eval_values(map_values_across.run, summarize_fmt = "run.%02d", target_prefix = "bold_smoothed.4mm")
   ),
-  tar_map(
-    values = map_values_naturalistic,
-    tar_target(
-      confounds_naturalistic,
-      command = here::here("ignore", "data", "fmri", "derivatives", "fmriprep-23.0.2", subject, "func",
-                           paste0(subject, "_task-naturalistic_", run, "_run-01_desc-confounds_timeseries.tsv")),
+  tar_eval(
+    expr = tar_target(
+      target_name,
+      command = vctrs::vec_c(!!!input_names),
       format = "file"
-    )
+    ),
+    values = make_eval_values(map_values_across.run, summarize_fmt = "run.%02d", target_prefix = "events_prespm_boxcar")
+  ),
+  tar_eval(
+    expr = tar_target(
+      target_name,
+      command = vctrs::vec_c(!!!input_names),
+      format = "file"
+    ),
+    values = make_eval_values(map_values_across.run, summarize_fmt = "run.%02d", target_prefix = "confounds_prespm")
+  ),
+  tar_eval(
+    tar_target(
+      name = target_name,
+      command = {
+        this_end_tr <- if_else(task == "task-controlled", n_trs_kept_controlled, n_trs_kept_naturalistic)
+        # the output file to be tracked is the SPM.mat file
+        spm_spec_est_level1(model_path = file.path("ignore", "models", task, "acq-mb8", subject, "model-boxcar", "smoothed-4mm"),
+                            tr_duration = tr_duration_mb8,
+                            trs_to_use = 1:this_end_tr + (disdaq_duration %/% tr_duration_mb8),
+                            # these three need to take vectors containing the values for each run
+                            bolds = a,
+                            events_prespm = b,
+                            confounds_prespm = c,
+                            script = matlab_spmbatch_spec_est_level1)
+      },
+      format = "file"
+    ),
+    values = map_values_across.run %>% 
+      select(-combine_vals) %>% 
+      mutate(a = syms(paste("bold_smoothed.4mm", suffix, sep = "_")),
+             b = syms(paste("events_prespm_boxcar", suffix, sep = "_")),
+             c = syms(paste("confounds_prespm", suffix, sep = "_")),
+             target_name = syms(paste("spm_level1_smoothed.4mm_boxcar", suffix, sep = "_"))) %>% 
+      select(-suffix)
+  )
+)
+
+## targets: maps out by task x contrast (combines across subject) ----
+
+map_values_across.task <- map_values_across.run %>% 
+  select(task, subject) %>% 
+  mutate(across(everything(), \(x) str_replace_all(x, "-", "."))) %>% 
+  chop(subject) %>% 
+  # now there are 2 rows for the 2 tasks
+  # this is just easiest to directly make a list-column of length 2 I think
+  mutate(contrast = list(c("attend.animal",
+                            "dog",
+                            "frog",
+                            "spider",
+                            "above",
+                            "looming",
+                            "looming.baseline",
+                            "stimuli",
+                            "ratings"),
+                          c("dog",
+                            "frog",
+                            "spider",
+                            "looming",
+                            "looming.baseline",
+                            "stimuli",
+                            "ratings")),
+         contrast_num = map(contrast, \(x) 1:length(x))) %>% 
+  unchop(cols = c(contrast, contrast_num)) %>% 
+  rename(suffix = task, combine_vals = subject)
+
+targets_fmri_level2 <- list(
+  # this target factory is still split out by subject, but very much pre-combining across subject
+  tar_eval(
+    tar_target(
+      name = target_name,
+      command = dep_name %>% 
+        dirname() %>% 
+        file.path(sprintf("con_%04d.nii", contrast_num)),
+      format = "file"
+    ),
+    # this has 1 row per contrast x subject
+    # multiple contrasts for the same subject will have the same SPM.mat dependency
+    values = map_values_across.task %>% 
+      # bc this one doesn't yet combine by subject. wait till the next one!
+      unchop(combine_vals) %>% 
+      mutate(combine_vals = str_replace_all(combine_vals, "-", "."),
+             dep_name = syms(paste("spm_level1_smoothed.4mm_boxcar", suffix, combine_vals, sep = "_")),
+             # THIS IS THE TARGET NAME FORMAT FOR THE DOWNSTREAM ONES! U CAN DO IT
+             target_name = syms(sprintf("con.%s_smoothed.4mm_boxcar_%s_%s", contrast, suffix, combine_vals))) %>% 
+      select(target_name, dep_name, contrast_num)
+  ),
+  tar_eval(
+    expr = tar_target(
+      target_name,
+      command = vctrs::vec_c(!!!input_names),
+      format = "file"
+    ),
+    values = map_values_across.task %>% 
+      mutate(input_names = pmap(list(contrast, suffix, combine_vals), \(a, b, c) syms(sprintf("con.%s_smoothed.4mm_boxcar_%s_%s", a, b, c))),
+             target_name = syms(sprintf("con.%s_smoothed.4mm_boxcar_%s", contrast, suffix))) %>% 
+      select(target_name, input_names)
+  ),
+  tar_eval(
+    tar_target(
+      name = target_name,
+      command = {
+        # the output file to be tracked is the SPM.mat file
+        spm_spec_est_level2(model_path = file.path("ignore", "models", str_replace(task, "\\.", "-"), "acq-mb8", "group", "model-boxcar", "smoothed-4mm", contrast),
+                            # this need to take a vector containing the values for each subject
+                            cons = input_names,
+                            con_name = contrast,
+                            script = matlab_spmbatch_spec_est_level2)
+      },
+      format = "file"
+    ),
+    values = map_values_across.task %>% 
+      mutate(input_names = syms(sprintf("con.%s_smoothed.4mm_boxcar_%s", contrast, suffix)),
+             target_name = syms(sprintf("level2.%s_smoothed.4mm_boxcar_%s", contrast, suffix))) %>% 
+      select(target_name, input_names, task = suffix, contrast)
+  )
+)
+
+## targets: OLD matlab code to specify spm models ----
+# please be mindful! spm batch seems to misbehave when the output files already exist
+# I think there must be some do-not-overwrite setting
+# so if you need to re-run this, you must manually delete the model output files
+
+targets_data_9901 <- list(
+  tar_map(
+    values = map_values_9901,
+    tar_target(
+      events_raw,
+      command = here::here("ignore",
+                           "data",
+                           "beh",
+                           subject,
+                           "raw",
+                           paste(subject, task, run, "raw.csv", sep = "_")),
+      format = "file"
+    ),
+    tar_target(
+      events_boxcar,
+      command = {
+        n_trs_trimmed <- nrow(read_csv(confounds_prespm, 
+                                       col_names = FALSE))
+        if (task == "task-controlled") {
+          FUN = parse_events_nback
+        } else if (task == "task-naturalistic") {
+          FUN = parse_events_naturalistic
+        }
+        FUN(events_raw, tr_duration = tr_duration, n_trs = n_trs_trimmed)
+      },
+    ),
+    tar_target(
+      events_endspike,
+      command = realign_onset_end_spike(events_boxcar)
+    ),
+    tar_target(
+      events_endfir,
+      command = {
+        if (task == "task-controlled") {
+          events_boxcar %>% 
+            realign_onset_end_spike(add_realign = -8) %>% 
+            relabel_onset_looming_nback()
+        } else if (task == "task-naturalistic") {
+          events_boxcar %>% 
+            realign_onset_end_spike(add_realign = -8) %>% 
+            relabel_onset_looming_naturalistic(conditions_base = stims_naturalistic)
+        }
+      }
+    ),
+    tar_target(
+      events_prespm_boxcar,
+      command = {
+        matlab_info <- format_events_matlab(onsets = events_boxcar,
+                                            raw_path = events_raw,
+                                            onset_type = "boxcar")
+        with_path(
+          matlab_path,
+          run_matlab_code(matlab_info$matlab_commands)
+        )
+        matlab_info$out_path
+      },
+      format = "file"
+    ),
+    tar_target(
+      events_prespm_endspike,
+      command = {
+        matlab_info <- format_events_matlab(onsets = events_endspike,
+                                            raw_path = events_raw,
+                                            onset_type = "endspike")
+        with_path(
+          matlab_path,
+          run_matlab_code(matlab_info$matlab_commands)
+        )
+        matlab_info$out_path
+      },
+      format = "file"
+    ),
+    tar_target(
+      events_prespm_endfir,
+      command = {
+        matlab_info <- format_events_matlab(onsets = events_endfir,
+                                            raw_path = events_raw,
+                                            onset_type = "endfir")
+        with_path(
+          matlab_path,
+          run_matlab_code(matlab_info$matlab_commands)
+        )
+        matlab_info$out_path
+      },
+      format = "file"
+    ),
+    tar_target(
+      confounds,
+      command = inject(here::here(!!!path_here_derivatives, subject, "func",
+                           paste(subject, task, run, "run-01_desc-confounds_timeseries.tsv", sep = "_"))),
+      format = "file"
+    ),
+    tar_target(
+      confounds_prespm,
+      command = discard_confound_start(file_path = confounds,
+                                       tr_duration = tr_duration),
+      format = "file"
+    ),
+    tar_target(
+      bold_gz,
+      command = here::here("ignore", "data", "fmri", "derivatives", "fmriprep-23.0.2", subject, "func",
+                           paste(subject, task, run, "run-01_space-MNI152NLin2009cAsym_res-2_desc-preproc_bold.nii.gz", sep = "_")),
+      format = "file"
+    ),
+    tar_target(
+      bold,
+      command = {
+        system2("gunzip",
+                        args = c("-k",
+                                 bold_gz))
+        
+        str_remove(bold_gz, ".gz")
+        },
+      format = "file"
+    ),
+    tar_target(
+      bold_smoothed.4mm,
+      command = spm_smooth(bold_path = bold,
+                           n_trs = nrow(read_tsv(confounds)),
+                           kernel = 4,
+                           script = matlab_spmbatch_smooth),
+      format = "file"
+    ),
+    tar_target(
+      bold_smoothed.2mm,
+      command = spm_smooth(bold_path = bold,
+                           n_trs = nrow(read_tsv(confounds)),
+                           kernel = 2,
+                           script = matlab_spmbatch_smooth),
+      format = "file"
+    ),
+    tar_target(
+      tcontrasts,
+      command = {
+        # contrasts must be set run-specifically
+        # bc some conditions might not appear in every run
+        if (task == "task-controlled") {
+          set_contrasts_nback(events_boxcar, stims_nback_base)
+        } else if (task == "task-naturalistic") {
+          set_contrasts_naturalistic(events_boxcar, stims_naturalistic)
+        }
+      }
+    ),
+    ## targets: matlab code to specify spm models ----
+    # please be mindful! spm batch seems to misbehave when the output files already exist
+    # I think there must be some do-not-overwrite setting
+    # so if you need to re-run this, you must manually delete the model output files
+    tar_target(
+      name = spm_level1_smoothed.4mm_boxcar,
+      command = spm_spec_est_level1(model_subfolders = c(task, run, subject, "model-boxcar", "smoothed-4mm"),
+                                    n_trs_raw = nrow(read_tsv(confounds)),
+                                    n_trs_trimmed = nrow(read_csv(confounds_prespm, 
+                                                                  col_names = FALSE)),
+                                    bold = bold_smoothed.4mm,
+                                    tr_duration = tr_duration,
+                                    events_prespm = events_prespm_boxcar,
+                                    confounds_prespm = confounds_prespm,
+                                    tcontrasts = tcontrasts,
+                                    script = matlab_spmbatch_spec_est_level1),
+      format = "file"
+    ),
+    tar_target(
+      name = spm_level1_smoothed.2mm_boxcar,
+      command = spm_spec_est_level1(model_subfolders = c(task, run, subject, "model-boxcar", "smoothed-2mm"),
+                                    n_trs_raw = nrow(read_tsv(confounds)),
+                                    n_trs_trimmed = nrow(read_csv(confounds_prespm, 
+                                                                  col_names = FALSE)),
+                                    bold = bold_smoothed.2mm,
+                                    tr_duration = tr_duration,
+                                    events_prespm = events_prespm_boxcar,
+                                    confounds_prespm = confounds_prespm,
+                                    tcontrasts = tcontrasts,
+                                    script = matlab_spmbatch_spec_est_level1),
+      format = "file"
+    ),
+    tar_target(
+      name = spm_level1_smoothed.4mm_endspike,
+      command = spm_spec_est_level1(model_subfolders = c(task, run, subject, "model-endspike", "smoothed-4mm"),
+                                    n_trs_raw = nrow(read_tsv(confounds)),
+                                    n_trs_trimmed = nrow(read_csv(confounds_prespm, 
+                                                                  col_names = FALSE)),
+                                    bold = bold_smoothed.4mm,
+                                    tr_duration = tr_duration,
+                                    events_prespm = events_prespm_endspike,
+                                    confounds_prespm = confounds_prespm,
+                                    tcontrasts = tcontrasts,
+                                    script = matlab_spmbatch_spec_est_level1),
+      format = "file"
+    ),
+    tar_target(
+      name = spm_level1_smoothed.2mm_endspike,
+      command = spm_spec_est_level1(model_subfolders = c(task, run, subject, "model-endspike", "smoothed-2mm"),
+                                    n_trs_raw = nrow(read_tsv(confounds)),
+                                    n_trs_trimmed = nrow(read_csv(confounds_prespm, 
+                                                                  col_names = FALSE)),
+                                    bold = bold_smoothed.2mm,
+                                    tr_duration = tr_duration,
+                                    events_prespm = events_prespm_endspike,
+                                    confounds_prespm = confounds_prespm,
+                                    tcontrasts = tcontrasts,
+                                    script = matlab_spmbatch_spec_est_level1),
+      format = "file"
+    ),
+    tar_target(
+      name = spm_level1_smoothed.4mm_endfir,
+      command = spm_spec_est_level1(model_subfolders = c(task, run, subject, "model-endfir", "smoothed-4mm"),
+                                    n_trs_raw = nrow(read_tsv(confounds)),
+                                    n_trs_trimmed = nrow(read_csv(confounds_prespm, 
+                                                                  col_names = FALSE)),
+                                    bold = bold_smoothed.4mm,
+                                    tr_duration = tr_duration,
+                                    events_prespm = events_prespm_endfir,
+                                    confounds_prespm = confounds_prespm,
+                                    tcontrasts = tcontrasts,
+                                    script = matlab_spmbatch_spec_est_level1),
+      format = "file"
+    ),
+    tar_target(
+      name = spm_level1_smoothed.2mm_endfir,
+      command = spm_spec_est_level1(model_subfolders = c(task, run, subject, "model-endfir", "smoothed-2mm"),
+                                    n_trs_raw = nrow(read_tsv(confounds)),
+                                    n_trs_trimmed = nrow(read_csv(confounds_prespm, 
+                                                                  col_names = FALSE)),
+                                    bold = bold_smoothed.2mm,
+                                    tr_duration = tr_duration,
+                                    events_prespm = events_prespm_endfir,
+                                    confounds_prespm = confounds_prespm,
+                                    tcontrasts = tcontrasts,
+                                    script = matlab_spmbatch_spec_est_level1),
+      format = "file"
+    ),
+    tar_target(
+      name = spm_voi.sc_smoothed.4mm,
+      command = spm_voi(model_path = spm_level1_smoothed.4mm_boxcar,
+                script = matlab_spmbatch_voi),
+      format = "file"
+    ),
+    tar_target(
+      name = spm_voi.sc_smoothed.2mm,
+      command = spm_voi(model_path = spm_level1_smoothed.2mm_boxcar,
+                        script = matlab_spmbatch_voi),
+      format = "file"
+    ),
+    names = c(task, subject, run)
+  )
+)
+
+## targets: behavioral data ----
+
+targets_beh <- list(
+  # in-scanner behavioral data for the controlled 1-back task
+  tar_combine(
+    name = events_raw_task.controlled,
+    targets_fmri[[1]][["events_raw"]],
+    command = vctrs::vec_c(!!!.x)
+  ),
+  tar_target(
+      name = beh_controlled,
+      command = {
+        # for whatever reason this was not working when it was externalized to another function...?
+        # tar_eval problems?
+        events_raw_task.controlled %>% 
+          map(read_csv) %>% 
+          bind_rows() %>% 
+          # Drop the wait-for-trigger screen and last row of ISI before the end-of-run screen
+          filter(!is.na(miniblock_file)) %>% 
+          # we want both of the RT measures to start from the beginning of the video display
+          mutate(video_late_resp.rt = video_late_resp.rt + video_late_resp.started - video_resp.started,
+                 rt = coalesce(video_resp.rt, video_late_resp.rt)) %>% 
+          select(subj_num = participant,
+                 run_num = run,
+                 threatening,
+                 attended,
+                 miniblock_num,
+                 animal_type,
+                 hemifield,
+                 direction, 
+                 rt,
+                 ends_with("rating")
+          ) %>% 
+          group_by(subj_num, run_num, miniblock_num) %>% 
+          mutate(attended = attended[1],
+                 across(ends_with("rating"), \(x) x[length(x)])) %>% 
+          mutate(attended = case_match(attended, "LOCATION" ~ "hemifield", "ANIMAL" ~ "animal"),
+                 resp_expected = if_else(attended == "hemifield",
+                                           hemifield == lag(hemifield),
+                                           animal_type == lag(animal_type)),
+                   resp_expected = coalesce(resp_expected, FALSE)) %>% 
+            ungroup() %>% 
+          # remove the rows for the rating trials after the ratings are already filled in upward
+          filter(!is.na(animal_type))
+        }
+    ),
+  # from 3 colleagues I was able to shake down for ratings in March 2024, lol
+  tar_target(
+    name = norms_naturalistic_raw,
+    command = list.files(here::here("ignore", "data", "norm"),
+                         recursive = TRUE,
+                         full.names = TRUE) %>% 
+      .[!grepl("debug", .)]
+  ),
+  tar_target(
+    name = norms_naturalistic,
+    command = norms_naturalistic_raw %>% 
+      map(\(x) read_csv(x, na = c("", "NA", "None"))) %>% 
+      bind_rows()
+  ),
+  tar_target(
+    name = norms_naturalistic_qualtrics,
+    command = {
+      annotations_naturalistic <- read_csv(annotations_videos_naturalistic)
+      annotations_controlled <- metadata_videos_nback %>% 
+        left_join(read_csv(qualtrics.ids_videos_controlled), by = "filename") %>% 
+        # to get the cols in the same format as the naturalistic annotations
+        mutate(has_loom = as.numeric(direction == "looming")) %>% 
+        select(video_id = filename, qualtrics_id, animal = animal_type, has_loom, hemifield)
+      
+      annotations <- bind_rows(naturalistic = annotations_naturalistic, 
+                               controlled = annotations_controlled,
+                               .id = "stim_type")
+        
+      
+      # TODO: Make sure your qualtrics API token is reproducible yet safe from prying eyes
+      # TODO also: set up another target so that targets will think the survey is updated when it is
+      qualtrics_data <- fetch_survey("SV_6nZOkqUU0MEAnMa",
+                                     include_display_order = FALSE)
+      
+      video_qualtrics_ids <- qualtrics_data %>% 
+        select(contains("caption")) %>% 
+        sjlabelled::get_label() 
+      
+      df_video_qualtrics_ids <- tibble(video_num = names(video_qualtrics_ids),
+                                       qualtrics_id = video_qualtrics_ids %>% 
+                                         str_split_i(pattern = " ", i = 1)) %>% 
+        separate_wider_regex(cols = video_num,
+                             patterns = c(video_num = "[[:digit:]]+",
+                                          "_[[:alpha:]]+",
+                                          block_num = "[[:digit:]]+")) %>% 
+        mutate(across(ends_with("num"), as.integer))
+      
+      qualtrics_data %>% 
+        filter(Status != "Survey Preview", participantId_check != "test") %>% 
+        select(-contains("quit"), -starts_with("Recipient"), -DistributionChannel, -UserLanguage) %>% 
+        pivot_longer(cols = c(contains("caption"), 
+                              contains("pleasantness"), 
+                              contains("arousal"), 
+                              contains("fear")), 
+                     names_to = c("video_num", ".value", "block_num"), 
+                     names_pattern = "([[:digit:]]+)_([[:alpha:]]+)([[:digit:]]+)",
+                     names_transform = list(video_num = as.integer,
+                                            block_num = as.integer)) %>% 
+        left_join(df_video_qualtrics_ids, by = c("video_num", "block_num")) %>% 
+        left_join(annotations,
+                  by = "qualtrics_id")
+    }
   )
 )
 
@@ -586,6 +1178,8 @@ list(
   targets_stimuli,
   targets_stimlists_nback,
   targets_stimlists_naturalistic,
-  targets_beh,
-  targets_fmriprep
+  targets_fmri,
+  targets_fmri_level1,
+  targets_fmri_level2,
+  targets_beh
 )
