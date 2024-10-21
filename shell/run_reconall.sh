@@ -8,5 +8,5 @@ scp ecco:/archival/projects/SPLaT/data/fmri/nifti/sub-${SUBJ_NUM_4D}/anat/sub-${
 # this one takes hours to run so you may never be able to run this whole script as .sh
 # you may just have to copy the commands into console as you need them
 recon-all -s sub-${SUBJ_NUM_4D} -i $SUBJECTS_DIR/sub-${SUBJ_NUM_4D}_T1w.nii.gz -all
-mris_convert sub-${SUBJ_NUM_4D}/surf/rh.pial sub-${SUBJ_NUM_4D}/surf/rh.stl
-mris_convert sub-${SUBJ_NUM_4D}/surf/lh.pial sub-${SUBJ_NUM_4D}/surf/lh.stl
+mris_convert $SUBJECTS_DIR/sub-${SUBJ_NUM_4D}/surf/rh.pial $SUBJECTS_DIR/sub-${SUBJ_NUM_4D}/surf/rh.stl
+mris_convert $SUBJECTS_DIR/sub-${SUBJ_NUM_4D}/surf/lh.pial $SUBJECTS_DIR/sub-${SUBJ_NUM_4D}/surf/lh.stl
