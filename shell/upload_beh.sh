@@ -1,7 +1,7 @@
 #!/bin/bash
 # It only runs FROM Monica's local TO server rn
 
-read -p "Enter subj num(s) to heuristic with no leading 0s (but with spaces): " SUBJ_NUMS
+read -p "Enter subj num(s) to upload with no leading 0s (but with spaces): " SUBJ_NUMS
 
 for SUBJ_NUM in ${SUBJ_NUMS[@]}; do
     printf -v SUBJ_NUM_4D '%04d' $SUBJ_NUM

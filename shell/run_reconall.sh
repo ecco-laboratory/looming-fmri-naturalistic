@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/bin/bash
 # It only runs on Monica's local (where freesurfer is installed)
 
 read -p "Enter subj num to freesurf with no leading 0s: " SUBJ_NUM
