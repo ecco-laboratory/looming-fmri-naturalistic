@@ -11,7 +11,7 @@
 #SBATCH --mail-type=ALL
 # ------------------------------------------
 
-STUDY_DIR="/home/mthieu/Repos/looming-fmri/"
+STUDY_DIR="/home/data/eccolab/SPLaT_fMRI/"
 BIDS_DIR="${STUDY_DIR}ignore/data/fmri/"
 DERIVS_DIR="derivatives/fmriprep-23.1.4"
 
