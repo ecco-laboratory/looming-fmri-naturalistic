@@ -38,9 +38,12 @@ echo Running for subject: $subject
 # find ${BIDS_DIR}/derivatives/freesurfer-6.0.1/sub-$subject/ -name "*IsRunning*" -type f -delete
 
 # Compose the command line
-#cmd="${SINGULARITY_CMD} /data /data/${DERIVS_DIR} participant --participant-label $subject --fs-license-file /fslicensepath/license.txt --fs-no-reconall -w /home/kealfar/work/ -vv --nprocs 32 --omp-nthreads 8  --output-spaces MNI152NLin2009cAsym:res-2 anat --verbose --low-mem --skip-bids-validation --me-output-echos"
 # flags you may or may not want to use:
 # --fs-no-reconall (default would be to run it)
+# flag notes
+# --nprocs is the total number of threads
+# --omp-nthreads is the total number of threads per process
+# I think we don't use the --mem flag because that is capped by the memory requested in the sbatch header?
 cmd="${SINGULARITY_CMD} /data /data/${DERIVS_DIR} participant --participant-label $subject --fs-license-file /fslicensepath/license.txt --fs-no-reconall -w /work/ -vv --nprocs 32 --omp-nthreads 8  --output-spaces MNI152NLin2009cAsym:res-2 anat fsaverage5 --verbose --low-mem --me-output-echos"
 
 
