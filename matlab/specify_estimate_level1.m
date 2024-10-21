@@ -99,7 +99,7 @@ if contains(out_path, "controlled")
     consess{9}.tcon.name = 'ratings';
     consess{9}.tcon.weights = double(contains(designmat_names, "ratings"));
 elseif contains(out_path, "naturalistic")
-    consess = cell(1, 7);
+    consess = cell(1, 6);
     consess{1}.tcon.name = 'dog';
     consess{1}.tcon.weights = contains(designmat_names, "dog") - (contains(designmat_names, "frog") + contains(designmat_names, "spider"));
     consess{2}.tcon.name = 'frog';
@@ -112,8 +112,6 @@ elseif contains(out_path, "naturalistic")
     consess{5}.tcon.weights = double(contains(designmat_names, "loom1"));
     consess{6}.tcon.name = 'stimuli';
     consess{6}.tcon.weights = contains(designmat_names, "loom1") + contains(designmat_names, "loom0");
-    consess{7}.tcon.name = 'ratings';
-    consess{7}.tcon.weights = double(contains(designmat_names, "ratings"));
 end
 % set the sessrep field as 'none' for all of them
 % because the same exact conditions don't appear in every run
