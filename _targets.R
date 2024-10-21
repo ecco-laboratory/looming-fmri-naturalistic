@@ -17,7 +17,7 @@ tar_option_set(
                "magrittr",
                "glue",
                "rlang",
-               "qualtRics") # packages that your targets need to run
+               "qualtRics"), # packages that your targets need to run
   # format = "qs", # Optionally set the default storage format. qs is fast.
   #
   # For distributed computing in tar_make(), supply a {crew} controller
@@ -25,7 +25,7 @@ tar_option_set(
   # Choose a controller that suits your needs. For example, the following
   # sets a controller with 2 workers which will run as local R processes:
   #
-  #   controller = crew::crew_controller_local(workers = 2)
+controller = crew::crew_controller_local(workers = 4)
   #
   # Alternatively, if you want workers to run on a high-performance computing
   # cluster, select a controller from the {crew.cluster} package. The following
@@ -42,11 +42,6 @@ tar_option_set(
   #
   # Set other options as needed.
 )
-
-# just starting with the suggested 2 workers for... safety I guess. Please don't explode your memory request!
-# tar_option_set(
-#   controller = crew::crew_controller_local(workers = 2)
-# )
 
 # tar_make_clustermq() is an older (pre-{crew}) way to do distributed computing
 # in {targets}, and its configuration for your machine is below.
@@ -552,27 +547,10 @@ n_trs_kept_controlled <- 1001
 # but before sub-0001, removed in-scanner ratings so the run is now shorter
 n_trs_kept_naturalistic <- 989
 
-map_values_9901 <- crossing(task = paste("task", c("controlled", "naturalistic"), sep = "-"),
-                     subject = sprintf("sub-%04d", 9901),
-                     run = paste("acq", c("mb4", "mb8", "me"), sep = "-")) %>% 
-  filter(!(task == "task-naturalistic" & run == "acq-mb4")) %>% 
-  mutate(tr_duration = map2_dbl(task, run, \(x, y) inject(here::here(!!!path_here_fmri, 
-                                                           paste(x, y, "bold.json", sep = "_"))) %>% 
-                                 jsonlite::fromJSON() %>% 
-                                 pluck("RepetitionTime")))
-
-map_values_pilot <- crossing(task = c("controlled", "naturalistic"),
-                       subject = 9902:9904,
-                       run = 1:5) %>% 
-  filter(!(task == "naturalistic" & run > 3),
-         !(subject == 9902 & ((task == "controlled" & run > 3) | (task == "naturalistic" & run > 2))) & !(subject == 9904 & task == "naturalistic")) %>% 
-  mutate(task = paste("task", task, sep = "-"),
-         subject = sprintf("sub-%04d", subject),
-         run = sprintf("run-%02d", run))
-
 map_values <- crossing(task = c("controlled", "naturalistic"),
-                             subject = 1,
-                             run = 1:5) %>% 
+                       # best only to include already fmriprepped subjects
+                       subject = 1:7,
+                       run = 1:5) %>% 
   filter(!(task == "naturalistic" & run > 3)) %>% 
   mutate(task = paste("task", task, sep = "-"),
          subject = sprintf("sub-%04d", subject),
@@ -690,6 +668,19 @@ targets_fmri_level1 <- list(
   tar_eval(
     expr = tar_target(
       target_name,
+      command = bind_rows(!!!input_names,
+                          .id = "run") %>% 
+        mutate(run = as.integer(run)),
+    ),
+    values = map_values_across.run %>% 
+      # we only need the full single-trial events dataframes for naturalistic
+      # to prepare to set the single-trial beta niftis as targets later
+      filter(startsWith(suffix, "task.naturalistic")) %>% 
+      make_eval_values(summarize_fmt = "run.%02d", target_prefix = "events_boxcar")
+  ),
+  tar_eval(
+    expr = tar_target(
+      target_name,
       command = vctrs::vec_c(!!!input_names),
       format = "file"
     ),
@@ -727,6 +718,28 @@ targets_fmri_level1 <- list(
              c = syms(paste("confounds_prespm", suffix, sep = "_")),
              target_name = syms(paste("spm_level1_smoothed.4mm_boxcar", suffix, sep = "_"))) %>% 
       select(-suffix)
+  ),
+  tar_eval(
+    tar_target(
+      name = target_name,
+      command = {
+        b # to target-depend it
+        n_confounds <- c %>% 
+          map_int(\(x) ncol(read_csv(x, col_names = FALSE))) %>% 
+          unique()
+        stopifnot(length(n_confounds) == 1)
+        get_beta_indices(events = a,
+                         n_confounds = n_confounds)
+      }
+    ),
+    values = map_values_across.run %>% 
+      filter(task == "task-naturalistic") %>% 
+      select(-combine_vals) %>% 
+      mutate(a = syms(paste("events_boxcar", suffix, sep = "_")),
+             b = syms(paste("spm_level1_smoothed.4mm_boxcar", suffix, sep = "_")),
+             c = syms(paste("confounds_prespm", suffix, sep = "_")),
+             target_name = syms(paste("beta.names_level1_smoothed.4mm_boxcar", suffix, sep = "_"))) %>% 
+      select(-suffix)
   )
 )
 
@@ -752,8 +765,7 @@ map_values_across.task <- map_values_across.run %>%
                             "spider",
                             "looming",
                             "looming.baseline",
-                            "stimuli",
-                            "ratings")),
+                            "stimuli")),
          contrast_num = map(contrast, \(x) 1:length(x))) %>% 
   unchop(cols = c(contrast, contrast_num)) %>% 
   rename(suffix = task, combine_vals = subject)
@@ -810,262 +822,11 @@ targets_fmri_level2 <- list(
   )
 )
 
-## targets: OLD matlab code to specify spm models ----
-# please be mindful! spm batch seems to misbehave when the output files already exist
-# I think there must be some do-not-overwrite setting
-# so if you need to re-run this, you must manually delete the model output files
-
-targets_data_9901 <- list(
-  tar_map(
-    values = map_values_9901,
-    tar_target(
-      events_raw,
-      command = here::here("ignore",
-                           "data",
-                           "beh",
-                           subject,
-                           "raw",
-                           paste(subject, task, run, "raw.csv", sep = "_")),
-      format = "file"
-    ),
-    tar_target(
-      events_boxcar,
-      command = {
-        n_trs_trimmed <- nrow(read_csv(confounds_prespm, 
-                                       col_names = FALSE))
-        if (task == "task-controlled") {
-          FUN = parse_events_nback
-        } else if (task == "task-naturalistic") {
-          FUN = parse_events_naturalistic
-        }
-        FUN(events_raw, tr_duration = tr_duration, n_trs = n_trs_trimmed)
-      },
-    ),
-    tar_target(
-      events_endspike,
-      command = realign_onset_end_spike(events_boxcar)
-    ),
-    tar_target(
-      events_endfir,
-      command = {
-        if (task == "task-controlled") {
-          events_boxcar %>% 
-            realign_onset_end_spike(add_realign = -8) %>% 
-            relabel_onset_looming_nback()
-        } else if (task == "task-naturalistic") {
-          events_boxcar %>% 
-            realign_onset_end_spike(add_realign = -8) %>% 
-            relabel_onset_looming_naturalistic(conditions_base = stims_naturalistic)
-        }
-      }
-    ),
-    tar_target(
-      events_prespm_boxcar,
-      command = {
-        matlab_info <- format_events_matlab(onsets = events_boxcar,
-                                            raw_path = events_raw,
-                                            onset_type = "boxcar")
-        with_path(
-          matlab_path,
-          run_matlab_code(matlab_info$matlab_commands)
-        )
-        matlab_info$out_path
-      },
-      format = "file"
-    ),
-    tar_target(
-      events_prespm_endspike,
-      command = {
-        matlab_info <- format_events_matlab(onsets = events_endspike,
-                                            raw_path = events_raw,
-                                            onset_type = "endspike")
-        with_path(
-          matlab_path,
-          run_matlab_code(matlab_info$matlab_commands)
-        )
-        matlab_info$out_path
-      },
-      format = "file"
-    ),
-    tar_target(
-      events_prespm_endfir,
-      command = {
-        matlab_info <- format_events_matlab(onsets = events_endfir,
-                                            raw_path = events_raw,
-                                            onset_type = "endfir")
-        with_path(
-          matlab_path,
-          run_matlab_code(matlab_info$matlab_commands)
-        )
-        matlab_info$out_path
-      },
-      format = "file"
-    ),
-    tar_target(
-      confounds,
-      command = inject(here::here(!!!path_here_derivatives, subject, "func",
-                           paste(subject, task, run, "run-01_desc-confounds_timeseries.tsv", sep = "_"))),
-      format = "file"
-    ),
-    tar_target(
-      confounds_prespm,
-      command = discard_confound_start(file_path = confounds,
-                                       tr_duration = tr_duration),
-      format = "file"
-    ),
-    tar_target(
-      bold_gz,
-      command = here::here("ignore", "data", "fmri", "derivatives", "fmriprep-23.0.2", subject, "func",
-                           paste(subject, task, run, "run-01_space-MNI152NLin2009cAsym_res-2_desc-preproc_bold.nii.gz", sep = "_")),
-      format = "file"
-    ),
-    tar_target(
-      bold,
-      command = {
-        system2("gunzip",
-                        args = c("-k",
-                                 bold_gz))
-        
-        str_remove(bold_gz, ".gz")
-        },
-      format = "file"
-    ),
-    tar_target(
-      bold_smoothed.4mm,
-      command = spm_smooth(bold_path = bold,
-                           n_trs = nrow(read_tsv(confounds)),
-                           kernel = 4,
-                           script = matlab_spmbatch_smooth),
-      format = "file"
-    ),
-    tar_target(
-      bold_smoothed.2mm,
-      command = spm_smooth(bold_path = bold,
-                           n_trs = nrow(read_tsv(confounds)),
-                           kernel = 2,
-                           script = matlab_spmbatch_smooth),
-      format = "file"
-    ),
-    tar_target(
-      tcontrasts,
-      command = {
-        # contrasts must be set run-specifically
-        # bc some conditions might not appear in every run
-        if (task == "task-controlled") {
-          set_contrasts_nback(events_boxcar, stims_nback_base)
-        } else if (task == "task-naturalistic") {
-          set_contrasts_naturalistic(events_boxcar, stims_naturalistic)
-        }
-      }
-    ),
-    ## targets: matlab code to specify spm models ----
-    # please be mindful! spm batch seems to misbehave when the output files already exist
-    # I think there must be some do-not-overwrite setting
-    # so if you need to re-run this, you must manually delete the model output files
-    tar_target(
-      name = spm_level1_smoothed.4mm_boxcar,
-      command = spm_spec_est_level1(model_subfolders = c(task, run, subject, "model-boxcar", "smoothed-4mm"),
-                                    n_trs_raw = nrow(read_tsv(confounds)),
-                                    n_trs_trimmed = nrow(read_csv(confounds_prespm, 
-                                                                  col_names = FALSE)),
-                                    bold = bold_smoothed.4mm,
-                                    tr_duration = tr_duration,
-                                    events_prespm = events_prespm_boxcar,
-                                    confounds_prespm = confounds_prespm,
-                                    tcontrasts = tcontrasts,
-                                    script = matlab_spmbatch_spec_est_level1),
-      format = "file"
-    ),
-    tar_target(
-      name = spm_level1_smoothed.2mm_boxcar,
-      command = spm_spec_est_level1(model_subfolders = c(task, run, subject, "model-boxcar", "smoothed-2mm"),
-                                    n_trs_raw = nrow(read_tsv(confounds)),
-                                    n_trs_trimmed = nrow(read_csv(confounds_prespm, 
-                                                                  col_names = FALSE)),
-                                    bold = bold_smoothed.2mm,
-                                    tr_duration = tr_duration,
-                                    events_prespm = events_prespm_boxcar,
-                                    confounds_prespm = confounds_prespm,
-                                    tcontrasts = tcontrasts,
-                                    script = matlab_spmbatch_spec_est_level1),
-      format = "file"
-    ),
-    tar_target(
-      name = spm_level1_smoothed.4mm_endspike,
-      command = spm_spec_est_level1(model_subfolders = c(task, run, subject, "model-endspike", "smoothed-4mm"),
-                                    n_trs_raw = nrow(read_tsv(confounds)),
-                                    n_trs_trimmed = nrow(read_csv(confounds_prespm, 
-                                                                  col_names = FALSE)),
-                                    bold = bold_smoothed.4mm,
-                                    tr_duration = tr_duration,
-                                    events_prespm = events_prespm_endspike,
-                                    confounds_prespm = confounds_prespm,
-                                    tcontrasts = tcontrasts,
-                                    script = matlab_spmbatch_spec_est_level1),
-      format = "file"
-    ),
-    tar_target(
-      name = spm_level1_smoothed.2mm_endspike,
-      command = spm_spec_est_level1(model_subfolders = c(task, run, subject, "model-endspike", "smoothed-2mm"),
-                                    n_trs_raw = nrow(read_tsv(confounds)),
-                                    n_trs_trimmed = nrow(read_csv(confounds_prespm, 
-                                                                  col_names = FALSE)),
-                                    bold = bold_smoothed.2mm,
-                                    tr_duration = tr_duration,
-                                    events_prespm = events_prespm_endspike,
-                                    confounds_prespm = confounds_prespm,
-                                    tcontrasts = tcontrasts,
-                                    script = matlab_spmbatch_spec_est_level1),
-      format = "file"
-    ),
-    tar_target(
-      name = spm_level1_smoothed.4mm_endfir,
-      command = spm_spec_est_level1(model_subfolders = c(task, run, subject, "model-endfir", "smoothed-4mm"),
-                                    n_trs_raw = nrow(read_tsv(confounds)),
-                                    n_trs_trimmed = nrow(read_csv(confounds_prespm, 
-                                                                  col_names = FALSE)),
-                                    bold = bold_smoothed.4mm,
-                                    tr_duration = tr_duration,
-                                    events_prespm = events_prespm_endfir,
-                                    confounds_prespm = confounds_prespm,
-                                    tcontrasts = tcontrasts,
-                                    script = matlab_spmbatch_spec_est_level1),
-      format = "file"
-    ),
-    tar_target(
-      name = spm_level1_smoothed.2mm_endfir,
-      command = spm_spec_est_level1(model_subfolders = c(task, run, subject, "model-endfir", "smoothed-2mm"),
-                                    n_trs_raw = nrow(read_tsv(confounds)),
-                                    n_trs_trimmed = nrow(read_csv(confounds_prespm, 
-                                                                  col_names = FALSE)),
-                                    bold = bold_smoothed.2mm,
-                                    tr_duration = tr_duration,
-                                    events_prespm = events_prespm_endfir,
-                                    confounds_prespm = confounds_prespm,
-                                    tcontrasts = tcontrasts,
-                                    script = matlab_spmbatch_spec_est_level1),
-      format = "file"
-    ),
-    tar_target(
-      name = spm_voi.sc_smoothed.4mm,
-      command = spm_voi(model_path = spm_level1_smoothed.4mm_boxcar,
-                script = matlab_spmbatch_voi),
-      format = "file"
-    ),
-    tar_target(
-      name = spm_voi.sc_smoothed.2mm,
-      command = spm_voi(model_path = spm_level1_smoothed.2mm_boxcar,
-                        script = matlab_spmbatch_voi),
-      format = "file"
-    ),
-    names = c(task, subject, run)
-  )
-)
-
 ## targets: behavioral data ----
 
 targets_beh <- list(
   # in-scanner behavioral data for the controlled 1-back task
+  # this target is a single aggregated target across all subjects!!
   tar_combine(
     name = events_raw_task.controlled,
     targets_fmri[[1]][["events_raw"]],
@@ -1108,6 +869,25 @@ targets_beh <- list(
           filter(!is.na(animal_type))
         }
     ),
+  tar_target(
+    name = events_raw_task.naturalistic,
+    # note! this does not use the subjects listed out in map_values
+    # but instead will return every file uploaded to beh that matches the pattern
+    # so may include some subjects who are not yet fmriprepped
+    command = list.files(here::here("ignore", "data", "beh"),
+                         pattern = "task-naturalistic_beh", 
+                         full.names = TRUE, 
+                         recursive = TRUE),
+    format = "file"
+  ),
+  tar_target(
+    name = beh_naturalistic,
+    command = events_raw_task.naturalistic %>% 
+        map(read_csv) %>% 
+        bind_rows() %>% 
+        select(subj_num = participant, video_id, has_loom, animal_type, ends_with("rating")) %>% 
+        filter(!is.na(video_id))
+  ),
   # from 3 colleagues I was able to shake down for ratings in March 2024, lol
   tar_target(
     name = norms_naturalistic_raw,
