@@ -1,0 +1,109 @@
+---
+title: "fMRI participants behavioral data"
+format: html
+---
+
+```{r}
+require(tidyverse)
+require(rlang)
+
+target_store <- here::here("ignore", "_targets")
+beh_controlled <- targets::tar_read(beh_controlled, store = target_store)
+beh_naturalistic <- targets::tar_read(beh_naturalistic, store = target_store)
+```
+
+## controlled task
+
+```{r}
+summarize_dprime <- function (.data, ...) {
+  dots <- enquos(...)
+  
+  .data %>% 
+    # group by different columns here to get different sub-versions of d'!
+    group_by(!!!dots, resp_expected) %>% 
+    # Including the infinity adjustment by default
+    summarize(rate = (sum(!is.na(rt))+1) / (n()+1), .groups = "drop") %>% 
+    mutate(resp_expected = if_else(resp_expected, "hit", "fa")) %>% 
+    pivot_wider(names_from = resp_expected, values_from = rate, names_prefix = "rate_") %>% 
+    mutate(dprime = qnorm(rate_hit) - qnorm(rate_fa))
+  
+}
+```
+
+
+```{r}
+beh_controlled %>% 
+  # group by different columns here to get different sub-versions of d'!
+  summarize_dprime(subj_num, direction, attended) %>% 
+  ggplot(aes(x = direction, y = dprime, color = factor(subj_num))) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_line(aes(group = subj_num)) +
+  guides(color = "none") +
+  facet_wrap(~ attended)
+```
+
+```{r}
+beh_controlled %>% 
+  summarize_dprime(subj_num, animal_type, attended) %>% 
+  ggplot(aes(x = animal_type, y = dprime, color = factor(subj_num))) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_line(aes(group = subj_num)) +
+  guides(color = "none") +
+  facet_wrap(~ attended)
+```
+
+```{r}
+beh_controlled %>% 
+  summarize_dprime(subj_num, hemifield, attended) %>% 
+  ggplot(aes(x = hemifield, y = dprime, color = factor(subj_num))) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_line(aes(group = subj_num)) +
+  guides(color = "none") +
+  facet_wrap(~ attended)
+```
+
+```{r}
+beh_controlled %>% 
+  mutate(threatening2 = if_else(threatening %in% c("above", "below"), "hemifield", "animal")) %>% 
+  # group by different columns here to get different sub-versions of d'!
+  summarize_dprime(subj_num, threatening2, attended) %>% 
+  ggplot(aes(x = threatening2, y = dprime, color = factor(subj_num))) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_line(aes(group = subj_num)) +
+  guides(color = "none") +
+  facet_wrap(~ attended)
+```
+
+## naturalistic task (RATINGS OUTSIDE SCANNER)
+
+```{r}
+beh_naturalistic %>% 
+  ggplot(aes(x = animal_type, y = pleasantness_rating, color = factor(subj_num))) +
+  geom_jitter(alpha = 0.4) +
+  geom_pointrange(stat = "summary") +
+  guides(color = "none")
+```
+
+```{r}
+beh_naturalistic %>% 
+  ggplot(aes(x = animal_type, y = pleasantness_rating, color = factor(has_loom))) +
+  geom_jitter(alpha = 0.4) +
+  geom_pointrange(stat = "summary", fun.data = mean_se) +
+  facet_wrap(~subj_num)
+```
+
+```{r}
+beh_naturalistic %>% 
+  ggplot(aes(x = animal_type, y = arousal_rating, color = factor(has_loom))) +
+  geom_jitter(alpha = 0.4) +
+  geom_pointrange(stat = "summary", fun.data = mean_se) +
+  facet_wrap(~subj_num)
+```
+
+```{r}
+beh_naturalistic %>% 
+  ggplot(aes(x = animal_type, y = fear_rating, color = factor(has_loom))) +
+  geom_jitter(alpha = 0.4) +
+  geom_pointrange(stat = "summary", fun.data = mean_se) +
+  facet_wrap(~subj_num)
+```

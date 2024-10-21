@@ -1,0 +1,252 @@
+---
+title: "Qualtrics/CloudResearch data checking"
+format: html
+---
+
+
+```{r}
+require(tidyverse)
+
+target_store <- here::here("ignore", "_targets")
+norms <- targets::tar_read(norms_naturalistic_qualtrics, store = target_store)
+```
+
+## checking completions for payment
+
+```{r}
+# TODO: test to make sure this is always 2 rows (either all NA or all valid)
+norms %>% 
+  count(is.na(caption), is.na(pleasantness), is.na(arousal), is.na(fear))
+```
+
+```{r}
+cloudresearch_status <- read_csv(here::here("ignore", "data", "norm", "assignments_58389f28-d2eb-4ed6-8930-133f09395116.csv")) %>% 
+  # So that previously returned but paid participants will show up as approved
+  # so they won't be double-bonused
+  mutate(Status = if_else(Payment + Bonus > 0, "Approved", Status)) %>% 
+  select(participantId = ParticipantId, Status)
+
+# to approve people who finished at least one trial and did the demos etc
+norms %>% 
+  # participants who for whatever reason did zero videos should not show up here
+  filter(!is.na(caption)) %>% 
+  count(assignmentId, participantId, participantId_check, block_num) %>% 
+  filter(n > 0, block_num == 2) %>% 
+  select(participantId) %>% 
+  inner_join(cloudresearch_status,
+             by = "participantId") %>% 
+  filter(Status != "Approved") %>% 
+  select(-Status) %>% 
+  mutate(message = "Thank you for completing our study! If you rated more than one video, we are about to process your extra payment as a bonus.") %>% 
+  write_csv(file = here::here("ignore", "data", "norm", glue::glue("cloudresearch_approve_{format(Sys.Date(), '%Y%m%d')}.csv")))
+```
+
+```{r}
+# to bonus people
+norms %>% 
+  filter(!is.na(caption)) %>% 
+  count(assignmentId, participantId, participantId_check, block_num) %>% 
+  filter(block_num == 2) %>% 
+  # if they only did one trial, this should yield bonus of 0
+  mutate(bonus_amount = 0.22 * (n-1)) %>% 
+  select(participantId, bonus_amount) %>% 
+  # keep only people being evaluated for the current cloudresearch batch
+  inner_join(cloudresearch_status,
+             by = "participantId") %>% 
+  filter(Status != "Approved") %>% 
+  # The returned or timed-out completers cannot be paid the base 0.22 via approval so they need it added back in here
+  mutate(bonus_amount = if_else(Status != "Pending", bonus_amount + 0.22, bonus_amount)) %>% 
+  filter(bonus_amount > 0) %>% 
+  select(-Status) %>% 
+  mutate(message = "Thank you for rating additional videos in our study! Here is your bonus based on our calculation of how many videos you watched and rated.") %>% 
+  write_csv(file = here::here("ignore", "data", "norm", glue::glue("cloudresearch_bonus_{format(Sys.Date(), '%Y%m%d')}.csv")))
+```
+
+## actually checking data
+
+```{r}
+norms %>% 
+  group_by(video_num, block_num) %>% 
+  summarize(n_ratings = sum(!is.na(caption))) %>% 
+  ggplot(aes(x = n_ratings)) +
+  geom_histogram(binwidth = 1) +
+  facet_wrap(~ block_num) +
+  labs(title = "ratings per video")
+```
+
+```{r}
+norms %>% 
+  group_by(participantId, block_num) %>% 
+  summarize(n_ratings = sum(!is.na(caption))) %>% 
+  ggplot(aes(x = n_ratings)) +
+  geom_histogram(binwidth = 1) +
+  facet_wrap(~ block_num) +
+  labs(title = "ratings per rater",
+       subtitle = "to estimate how many more slots to open")
+```
+
+### mean scores by video along various
+
+```{r}
+norms_summarized <- norms %>% 
+  # should omit the controlled reverse-from-near videos that aren't currently being shown in the fMRI task
+  # and the naturalistic videos from underrepresented categories
+  filter(!is.na(caption), !is.na(stim_type), !(animal %in% c("lion", "snake"))) %>% 
+  select(stim_type, video_id, animal, has_loom, pleasantness, arousal, fear) %>% 
+  group_by(stim_type, video_id, animal, has_loom) %>% 
+  summarize(across(c(pleasantness, arousal, fear), list(mean = mean, sd = sd)), .groups = "drop")
+
+norms_summarized %>% 
+  ggplot(aes(x = fct_reorder(animal, pleasantness_mean, .desc = TRUE), y = pleasantness_mean, color = factor(has_loom))) +
+  geom_jitter(width = 0.05, alpha = 0.7) +
+  scale_y_reverse() +
+  facet_grid(stim_type ~ .)
+```
+
+```{r}
+norms_summarized %>% 
+  ggplot(aes(x = fct_reorder(animal, arousal_mean, .desc = TRUE), y = arousal_mean, color = factor(has_loom))) +
+  geom_jitter(width = 0.05, alpha = 0.7) +
+  facet_grid(stim_type ~ .)
+```
+
+```{r}
+norms_summarized %>% 
+  ggplot(aes(x = fct_reorder(animal, fear_mean, .desc = TRUE), y = fear_mean, color = factor(has_loom))) +
+  geom_jitter(width = 0.05, alpha = 0.7) +
+  facet_grid(stim_type ~ .)
+```
+
+```{r}
+norms_summarized %>% 
+  summarize(correlation = cor(pleasantness_mean, arousal_mean, use = "everything"))
+
+norms_summarized %>% 
+  filter(animal %in% c("dog", "frog", "spider")) %>% 
+  ggplot(aes(x = pleasantness_mean, y = arousal_mean)) +
+  geom_point(aes(color = factor(has_loom))) +
+  geom_smooth(method = "lm") +
+  facet_grid(~ stim_type)
+```
+
+```{r}
+norms_summarized %>% 
+  lm(pleasantness_mean ~ has_loom, data = .) %>% 
+  summary()
+```
+
+```{r}
+norms_summarized %>% 
+  lm(arousal_mean ~ has_loom, data = .) %>% 
+  summary()
+```
+
+### variation (sd) in ratings per video
+
+```{r}
+norms_summarized %>% 
+  ggplot(aes(x = pleasantness_sd, fill = factor(has_loom))) +
+  geom_histogram(position = "identity", alpha = 0.5, binwidth = 2) +
+  facet_grid(~ stim_type) +
+  labs(subtitle = "0-100 rating scale",
+       x = "SD of valence ratings across raters for each video",
+       fill = "looms?")
+```
+
+```{r}
+norms_summarized %>% 
+  ggplot(aes(x = arousal_sd, fill = factor(has_loom))) +
+  geom_histogram(position = "identity", alpha = 0.5, binwidth = 2) +
+  facet_grid(~ stim_type) +
+  labs(subtitle = "0-100 rating scale",
+       x = "SD of arousal ratings across raters for each video",
+       fill = "looms?")
+```
+
+```{r}
+norms_summarized %>% 
+  ggplot(aes(x = fct_reorder(animal, pleasantness_sd), y = pleasantness_sd, color = factor(has_loom))) +
+  geom_jitter(width = 0.05)
+```
+
+```{r}
+norms_summarized %>% 
+  ggplot(aes(x = fct_reorder(animal, fear_sd, .desc = TRUE), y = fear_sd, color = factor(has_loom))) +
+  geom_jitter(width = 0.05)
+```
+
+```{r}
+norms_summarized %>% 
+  ggplot(aes(x = fct_reorder(animal, arousal_sd), y = arousal_sd, color = factor(has_loom))) +
+  geom_jitter(width = 0.05)
+```
+
+### within subjects
+
+#### natty looms
+
+```{r}
+# 08-13-2024: you can't do this across ALL naturalistic videos bc they were normed in different rounds
+# so the videos are separated--impossible for one subject to have seen every single video
+norms %>% 
+  filter(!is.na(caption), stim_type == "naturalistic", animal %in% c("dog", "frog", "spider")) %>%
+  group_by(participantId) %>% 
+  mutate(n = n()) %>% 
+  ungroup() %>% 
+  filter(n > 50) %>% 
+  select(participantId, video_id, animal, has_loom, pleasantness, arousal, fear) %>% 
+  mutate(unpleasantness = -(pleasantness - 50),
+         animal = case_match(animal, "dog" ~ -1, "frog" ~ 0, "spider" ~ 1)) %>% 
+  lme4::lmer(unpleasantness ~ animal * has_loom + (1 | participantId), data = .) %>% 
+  broom.mixed::tidy() %>% 
+  filter(effect == "fixed") %>% 
+  select(term:statistic) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3))) %>% 
+  knitr::kable()
+```
+
+```{r}
+norms %>% 
+  filter(!is.na(caption), !(animal %in% c("cat", "lion", "snake"))) %>%
+  group_by(participantId) %>% 
+  mutate(n = n()) %>% 
+  ungroup() %>% 
+  filter(n > 50) %>% 
+  select(participantId, video_id, animal, has_loom, pleasantness, arousal, fear) %>% 
+  mutate(arousal = arousal - 50) %>% 
+  lme4::lmer(arousal ~ animal * has_loom + (1 | participantId), data = .) %>% summary()
+```
+
+```{r}
+norms %>% 
+  filter(!is.na(caption), !(animal %in% c("cat", "lion", "snake"))) %>%
+  group_by(participantId) %>% 
+  mutate(n = n()) %>% 
+  ungroup() %>% 
+  filter(n > 50) %>% 
+  select(participantId, video_id, animal, has_loom, pleasantness, arousal, fear) %>% 
+  mutate(fear = fear - 50) %>% 
+  lme4::lmer(fear ~ has_loom + (1 | participantId), data = .) %>% summary()
+```
+
+#### controlled looms
+
+```{r}
+norms %>% 
+  filter(!is.na(caption), stim_type == "controlled") %>%
+  group_by(participantId) %>% 
+  mutate(n = n()) %>% 
+  ungroup() %>% 
+  filter(n >= 49) %>% 
+  select(participantId, video_id, animal, has_loom, pleasantness, arousal, fear) %>% 
+  mutate(unpleasantness = -(pleasantness - 50),
+         # 2024-08-15 phil wishes the animals to be effect coded. so it shall be
+         animal = case_match(animal, "dog" ~ -1, "frog" ~ 0, "spider" ~ 1)) %>% 
+  lme4::lmer(unpleasantness ~ animal * has_loom + (1 | participantId), data = .) %>% 
+  broom.mixed::tidy() %>% 
+  filter(effect == "fixed") %>% 
+  select(term:statistic) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3))) %>% 
+  knitr::kable()
+```
+
