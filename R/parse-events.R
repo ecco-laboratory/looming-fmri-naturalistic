@@ -1,40 +1,5 @@
 # various helper functions for converting psychopy data to SPM-able events ----
 
-## calculating behavioral performance. almost like we care about cognition ----
-
-parse_beh_nback <- function (file_path) {
-  raw <- read_csv(file_path)
-  
-  out <- raw %>% 
-    # Drop the wait-for-trigger screen and last row of ISI before the end-of-run screen
-    filter(!is.na(miniblock_file)) %>% 
-    # we want both of the RT measures to start from the beginning of the video display
-    mutate(video_late_resp.rt = video_late_resp.rt + video_late_resp.started - video_resp.started,
-                  rt = coalesce(video_resp.rt, video_late_resp.rt)) %>% 
-      select(run_num = run,
-             threatening,
-             attended,
-             miniblock_num,
-             animal_type,
-             hemifield,
-             direction, 
-             rt,
-             ends_with("rating")
-      ) %>% 
-      group_by(miniblock_num) %>% 
-      mutate(attended = attended[1],
-             across(ends_with("rating"), \(x) x[length(x)])) %>% 
-      mutate(attended = case_match(attended, "LOCATION" ~ "hemifield", "ANIMAL" ~ "animal"),
-             resp_expected = if_else(attended == "hemifield",
-                                     hemifield == lag(hemifield),
-                                     animal_type == lag(animal_type)),
-             resp_expected = coalesce(resp_expected, FALSE)) %>% 
-      ungroup()
-  
-  return (out)
-  
-}
-
 ## actually calculating event timing for onsets ----
 
 parse_events_naturalistic <- function (file_path, conditions_base, tr_duration, n_trs) {
@@ -44,15 +9,18 @@ parse_events_naturalistic <- function (file_path, conditions_base, tr_duration, 
   t_start <- raw$cross_iti.started[2] + (8 %/% tr_duration)*tr_duration
   
   onsets <- raw %>% 
-    # Drop the last row of ISI before the end-of-run screen
-    filter(!is.na(video_id)) %>% 
+    # As of sub-0001, cross_iti appears "before" its video
+    # so video offset must be backed out from the fixation in the next row
+    # so for the edge case of the final video, grab cross_iti_final instead
+    mutate(offset_video = lead(coalesce(cross_iti.started, cross_iti_final.started))) %>% 
     select(video_id, 
-           onset_video = video.started, # Video onset
-           offset_video = cross_isi.started, # Changing video offset, backed out from subsequent fixation onset (idiotic but it'll work)
-           onset_ratings = mood_pleasantness_slider.started # Rating screens onset
+           onset_video = video.started,
+           offset_video
            ) %>% 
     mutate(duration_video = offset_video - onset_video,
            duration_ratings = 12) %>% 
+    # Now drop the last row of ISI before the end-of-run screen
+    filter(!is.na(video_id)) %>% 
     select(-offset_video) %>% 
     pivot_longer(cols = c(starts_with("onset"), starts_with("duration")),
                  names_to = c(".value", "condition"),
@@ -68,7 +36,7 @@ parse_events_naturalistic <- function (file_path, conditions_base, tr_duration, 
     # to send it into the SPM.mat so that contrasts can be set in matlab
     left_join(conditions_base %>% select(video, animal_type, has_loom), 
               by = c("video_id" = "video")) %>% 
-    mutate(condition = if_else(condition != "ratings", glue("{animal_type}_loom{has_loom}_{condition}"), condition)) %>% 
+    mutate(condition = glue("{animal_type}_loom{has_loom}_{condition}")) %>% 
     # Just in case there are any onsets that are after the scan actually ended
     # remove them because they will end up creating zero-regressors later which we don't want
     filter(onset + duration < tr_duration * n_trs) %>% 
@@ -157,7 +125,6 @@ relabel_onset_looming_naturalistic <- function (onsets, conditions_base) {
       mutate(condition2 = fct_recode(as.character(has_loom),
                                          "looming" = "1",
                                          "receding" = "0"),
-             condition2 = coalesce(condition2, "ratings"),
              condition2 = fct_relevel(condition2, "looming", "receding")) %>% 
       select(condition = condition2, onset, duration)
     
@@ -216,4 +183,16 @@ format_events_matlab <- function (onsets, raw_path, onset_type) {
   # we do need out_path to come out for targets tracking
   # even though it's already in the save part of matlab_commands
   return (list(out_path = out_mat_path, matlab_commands = matlab_commands))
+}
+
+## patching confound cols in to get the corresponding beta.nii indices ----
+
+# firm coding the number of confounds here 
+# but you can set it by pulling one sample confound file and counting the number of columns
+get_beta_indices <- function (events, n_confounds = 24) {
+  events %>% 
+    mutate(condition = as.character(condition), 
+           beta_num = 1:n() + n_confounds*(run-1), 
+           beta_name = sprintf("beta_%04d.nii", beta_num)) %>% 
+    select(condition, beta_name)
 }
