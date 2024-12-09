@@ -1,9 +1,9 @@
 #!/bin/bash
 #
 #SBATCH --nodelist=node1,node4
-#SBATCH --time=14-00:00:00
+#SBATCH --time=7-00:00:00
 #SBATCH --mem=48G
-#SBATCH --partition month-long  # Queue names you can submit to
+#SBATCH --partition week-long  # Queue names you can submit to
 # Outputs ----------------------------------
 #SBATCH -o /home/%u/log/%x-%A-%a.out
 #SBATCH -e /home/%u/log/%x-%A-%a.err
