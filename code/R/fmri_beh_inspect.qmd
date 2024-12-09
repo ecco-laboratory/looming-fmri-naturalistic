@@ -8,8 +8,11 @@ require(tidyverse)
 require(rlang)
 
 target_store <- here::here("ignore", "_targets")
-beh_controlled <- targets::tar_read(beh_controlled, store = target_store)
-beh_naturalistic <- targets::tar_read(beh_naturalistic, store = target_store)
+beh_controlled <- targets::tar_read(beh_controlled, store = target_store) %>% 
+  filter(!(subj_num %in% c(5, 11))) %>% 
+  mutate(threatening2 = if_else(threatening %in% c("above", "below"), "hemifield", "animal"))
+beh_naturalistic <- targets::tar_read(beh_naturalistic, store = target_store) %>% 
+  filter(!(subj_num %in% c(5, 11)))
 ```
 
 ## controlled task
@@ -22,88 +25,327 @@ summarize_dprime <- function (.data, ...) {
     # group by different columns here to get different sub-versions of d'!
     group_by(!!!dots, resp_expected) %>% 
     # Including the infinity adjustment by default
-    summarize(rate = (sum(!is.na(rt))+1) / (n()+1), .groups = "drop") %>% 
+    # TODO: FIND THE CITATION FOR THIS ADJUSTMENT I FORGOT TO SAVE IT UGH ME
+    summarize(rate = (sum(!is.na(rt))+0.5) / (n()+1), .groups = "drop") %>% 
     mutate(resp_expected = if_else(resp_expected, "hit", "fa")) %>% 
     pivot_wider(names_from = resp_expected, values_from = rate, names_prefix = "rate_") %>% 
     mutate(dprime = qnorm(rate_hit) - qnorm(rate_fa))
   
 }
+
+summarize_rt <- function (.data, ...) {
+  dots <- enquos(...)
+  
+  .data %>% 
+    # only correct presses. but I think most of them are right anyway
+    filter(!is.na(rt), resp_expected) %>% 
+    mutate(log_rt = log(rt * 1000)) %>% 
+    # group by different columns here to get different sub-versions of rt!
+    group_by(!!!dots) %>% 
+    # Including the infinity adjustment by default
+    summarize(log_rt.mean = mean(log_rt),
+              log_rt.sd = sd(log_rt), 
+              n_trials = n(),
+              .groups = "drop")
+}
 ```
 
+### accuracy (d')
 
 ```{r}
 beh_controlled %>% 
   # group by different columns here to get different sub-versions of d'!
-  summarize_dprime(subj_num, direction, attended) %>% 
-  ggplot(aes(x = direction, y = dprime, color = factor(subj_num))) +
+  summarize_dprime(subj_num, direction) %>% 
+  ggplot(aes(x = direction, y = dprime)) +
   geom_hline(yintercept = 0, linetype = "dotted") +
-  geom_line(aes(group = subj_num)) +
+  geom_line(aes(group = subj_num, color = factor(subj_num))) +
+  geom_point(aes(color = factor(subj_num))) +
+  geom_line(aes(group = 1), stat = "summary", fun.data = "mean_se") +
+  geom_pointrange(stat = "summary", fun.data = "mean_se") +
   guides(color = "none") +
-  facet_wrap(~ attended)
+  labs(x = "zoom direction", y = "1-back d' (z-units)") +
+  theme_bw(base_size = 20)
 ```
 
 ```{r}
 beh_controlled %>% 
+  summarize_dprime(subj_num, animal_type) %>% 
+  ggplot(aes(x = animal_type, y = dprime)) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_line(aes(group = subj_num, color = factor(subj_num))) +
+  geom_point(aes(color = factor(subj_num))) +
+  geom_line(aes(group = 1), stat = "summary", fun.data = "mean_se") +
+  geom_pointrange(stat = "summary", fun.data = "mean_se") +
+  guides(color = "none") +
+  labs(x = "animal type", y = "1-back d' (z-units)") +
+  theme_bw(base_size = 20)
+```
+
+```{r}
+beh_controlled %>% 
+  mutate(attended = paste("attend", attended)) %>% 
   summarize_dprime(subj_num, animal_type, attended) %>% 
-  ggplot(aes(x = animal_type, y = dprime, color = factor(subj_num))) +
+  ggplot(aes(x = animal_type, y = dprime)) +
   geom_hline(yintercept = 0, linetype = "dotted") +
-  geom_line(aes(group = subj_num)) +
+  geom_line(aes(group = subj_num, color = factor(subj_num))) +
+  geom_point(aes(color = factor(subj_num))) +
+  geom_line(aes(group = 1), stat = "summary", fun.data = "mean_se") +
+  geom_pointrange(stat = "summary", fun.data = "mean_se") +
+  facet_wrap(~ attended) +
   guides(color = "none") +
-  facet_wrap(~ attended)
+  labs(x = "animal type", y = "1-back d' (z-units)") +
+  theme_bw(base_size = 20)
 ```
 
 ```{r}
 beh_controlled %>% 
+  summarize_dprime(subj_num, hemifield) %>% 
+  ggplot(aes(x = hemifield, y = dprime)) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_line(aes(group = subj_num, color = factor(subj_num))) +
+  geom_point(aes(color = factor(subj_num))) +
+  geom_line(aes(group = 1), stat = "summary", fun.data = "mean_se") +
+  geom_pointrange(stat = "summary", fun.data = "mean_se") +
+  guides(color = "none") +
+  labs(x = "starting hemifield", y = "1-back d' (z-units)") +
+  theme_bw(base_size = 20)
+```
+
+```{r}
+beh_controlled %>% 
+  mutate(attended = paste("attend", attended)) %>% 
   summarize_dprime(subj_num, hemifield, attended) %>% 
-  ggplot(aes(x = hemifield, y = dprime, color = factor(subj_num))) +
+  ggplot(aes(x = hemifield, y = dprime)) +
   geom_hline(yintercept = 0, linetype = "dotted") +
-  geom_line(aes(group = subj_num)) +
+  geom_line(aes(group = subj_num, color = factor(subj_num))) +
+  geom_point(aes(color = factor(subj_num))) +
+  geom_line(aes(group = 1), stat = "summary", fun.data = "mean_se") +
+  geom_pointrange(stat = "summary", fun.data = "mean_se") +
+  facet_wrap(~ attended) +
   guides(color = "none") +
-  facet_wrap(~ attended)
+  labs(x = "starting hemifield", y = "1-back d' (z-units)") +
+  theme_bw(base_size = 20)
 ```
 
 ```{r}
 beh_controlled %>% 
-  mutate(threatening2 = if_else(threatening %in% c("above", "below"), "hemifield", "animal")) %>% 
+  summarize_dprime(subj_num, attended) %>% 
+  ggplot(aes(x = attended, y = dprime)) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_line(aes(group = subj_num, color = factor(subj_num))) +
+  geom_point(aes(color = factor(subj_num))) +
+  geom_line(aes(group = 1), stat = "summary", fun.data = "mean_se") +
+  geom_pointrange(stat = "summary", fun.data = "mean_se") +
+  guides(color = "none") +
+  labs(x = "attended dimension", y = "1-back d' (z-units)") +
+  theme_bw(base_size = 20)
+```
+
+```{r}
+beh_controlled %>% 
+  # group by different columns here to get different sub-versions of d'!
+  summarize_dprime(subj_num, threatening) %>% 
+  ggplot(aes(x = threatening, y = dprime)) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_line(aes(group = subj_num, color = factor(subj_num))) +
+  geom_point(aes(color = factor(subj_num))) +
+  geom_line(aes(group = 1), stat = "summary", fun.data = "mean_se") +
+  geom_pointrange(stat = "summary", fun.data = "mean_se") +
+  guides(color = "none") +
+  labs(x = "Which dimension is threatening?", y = "1-back d' (z-units)") +
+  theme_bw(base_size = 20)
+```
+
+```{r}
+beh_controlled %>% 
+  # group by different columns here to get different sub-versions of d'!
+  summarize_dprime(subj_num, threatening2) %>% 
+  ggplot(aes(x = threatening2, y = dprime)) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  geom_line(aes(group = subj_num, color = factor(subj_num))) +
+  geom_point(aes(color = factor(subj_num))) +
+  geom_line(aes(group = 1), stat = "summary", fun.data = "mean_se") +
+  geom_pointrange(stat = "summary", fun.data = "mean_se") +
+  guides(color = "none") +
+  labs(x = "Which dimension is threatening?", y = "1-back d' (z-units)") +
+  theme_bw(base_size = 20)
+```
+
+```{r}
+beh_controlled %>% 
+  mutate(attended = paste("attend", attended)) %>% 
   # group by different columns here to get different sub-versions of d'!
   summarize_dprime(subj_num, threatening2, attended) %>% 
-  ggplot(aes(x = threatening2, y = dprime, color = factor(subj_num))) +
+  ggplot(aes(x = threatening2, y = dprime)) +
   geom_hline(yintercept = 0, linetype = "dotted") +
-  geom_line(aes(group = subj_num)) +
+  geom_line(aes(group = subj_num, color = factor(subj_num))) +
+  geom_point(aes(color = factor(subj_num))) +
+  geom_line(aes(group = 1), stat = "summary", fun.data = "mean_se") +
+  geom_pointrange(stat = "summary", fun.data = "mean_se") +
   guides(color = "none") +
-  facet_wrap(~ attended)
+  facet_wrap(~ attended) +
+  labs(x = "Which dimension is threatening?", y = "1-back d' (z-units)") +
+  theme_bw(base_size = 20)
+```
+
+### response time
+
+```{r}
+beh_controlled %>% 
+  summarize_rt(subj_num, direction) %>% 
+  ggplot(aes(x = direction, y = log_rt.mean)) +
+  geom_line(aes(group = subj_num, color = factor(subj_num))) +
+  geom_point(aes(color = factor(subj_num))) +
+  geom_line(aes(group = 1), stat = "summary", fun.data = "mean_se") +
+  geom_pointrange(stat = "summary", fun.data = "mean_se") +
+  guides(color = "none") +
+  labs(x = "zoom direction", y = "log response time (log-ms)") +
+  theme_bw(base_size = 20)
+```
+
+```{r}
+beh_controlled %>% 
+  summarize_rt(subj_num, animal_type) %>% 
+  ggplot(aes(x = animal_type, y = log_rt.mean)) +
+    geom_line(aes(group = subj_num, color = factor(subj_num))) +
+  geom_point(aes(color = factor(subj_num))) +
+  geom_line(aes(group = 1), stat = "summary", fun.data = "mean_se") +
+  geom_pointrange(stat = "summary", fun.data = "mean_se") +
+  guides(color = "none") +
+  labs(x = "animal type", y = "log response time (log-ms)") +
+  theme_bw(base_size = 20)
+```
+
+```{r}
+beh_controlled %>% 
+  summarize_rt(subj_num, hemifield) %>% 
+  ggplot(aes(x = hemifield, y = log_rt.mean)) +
+    geom_line(aes(group = subj_num, color = factor(subj_num))) +
+  geom_point(aes(color = factor(subj_num))) +
+  geom_line(aes(group = 1), stat = "summary", fun.data = "mean_se") +
+  geom_pointrange(stat = "summary", fun.data = "mean_se") +
+  guides(color = "none") +
+  labs(x = "starting hemifield", y = "log response time (log-ms)") +
+  theme_bw(base_size = 20)
+```
+
+```{r}
+beh_controlled %>% 
+  summarize_rt(subj_num, attended) %>% 
+  ggplot(aes(x = attended, y = log_rt.mean)) +
+    geom_line(aes(group = subj_num, color = factor(subj_num))) +
+  geom_point(aes(color = factor(subj_num))) +
+  geom_line(aes(group = 1), stat = "summary", fun.data = "mean_se") +
+  geom_pointrange(stat = "summary", fun.data = "mean_se") +
+  guides(color = "none") +
+  labs(x = "attended dimension", y = "log response time (log-ms)") +
+  theme_bw(base_size = 20)
+```
+
+```{r}
+beh_controlled %>% 
+  mutate(threatening2 = if_else(threatening %in% c("above", "below"), "hemifield", "animal"),
+         attended = paste("attend", attended)) %>% 
+  # group by different columns here to get different sub-versions of d'!
+  summarize_rt(subj_num, threatening2, attended) %>% 
+  ggplot(aes(x = threatening2, y = log_rt.mean)) +
+  geom_line(aes(group = subj_num, color = factor(subj_num))) +
+  geom_point(aes(color = factor(subj_num))) +
+  geom_line(aes(group = 1), stat = "summary", fun.data = "mean_se") +
+  geom_pointrange(stat = "summary", fun.data = "mean_se") +
+  guides(color = "none") +
+  facet_wrap(~ attended) +
+  labs(x = "Which dimension is threatening?", y = "log response time (log-ms)") +
+  theme_bw(base_size = 20)
 ```
 
 ## naturalistic task (RATINGS OUTSIDE SCANNER)
 
 ```{r}
 beh_naturalistic %>% 
-  ggplot(aes(x = animal_type, y = pleasantness_rating, color = factor(subj_num))) +
-  geom_jitter(alpha = 0.4) +
-  geom_pointrange(stat = "summary") +
-  guides(color = "none")
+  mutate(has_loom = if_else(has_loom == 1, "Looming", "No looming"),
+         animal_type = fct_relevel(animal_type, "food", "dog", "cat")) %>% 
+  ggplot(aes(x = animal_type, y = pleasantness_rating, color = factor(has_loom))) +
+  geom_jitter(alpha = 0.2) +
+  geom_pointrange(stat = "summary", fun.data = "mean_se") +
+    labs(x = "Object type",
+       y = "Pleasantness",
+       color = "Loom?") +
+  theme_bw(base_size = 20)
 ```
 
 ```{r}
 beh_naturalistic %>% 
+  filter(animal_type != "food") %>% 
+  lme4::lmer(fear_rating ~ has_loom + (1 | subj_num), data = .) %>% 
+  summary()
+```
+
+
+```{r}
+beh_naturalistic %>% 
+  mutate(has_loom = if_else(has_loom == 1, "Looming", "No looming"),
+         animal_type = fct_relevel(animal_type, "food", "dog", "cat")) %>% 
   ggplot(aes(x = animal_type, y = pleasantness_rating, color = factor(has_loom))) +
   geom_jitter(alpha = 0.4) +
   geom_pointrange(stat = "summary", fun.data = mean_se) +
-  facet_wrap(~subj_num)
+  facet_wrap(~subj_num) +
+  labs(x = "Object type",
+       y = "Pleasantness",
+       color = "Loom?") +
+  theme_bw(base_size = 20)
 ```
 
 ```{r}
 beh_naturalistic %>% 
+  mutate(has_loom = if_else(has_loom == 1, "Looming", "No looming"),
+         animal_type = fct_relevel(animal_type, "food", "dog", "cat")) %>% 
   ggplot(aes(x = animal_type, y = arousal_rating, color = factor(has_loom))) +
   geom_jitter(alpha = 0.4) +
   geom_pointrange(stat = "summary", fun.data = mean_se) +
-  facet_wrap(~subj_num)
+  facet_wrap(~subj_num) +
+  labs(x = "Object type",
+       y = "Arousal",
+       color = "Loom?") +
+  theme_bw(base_size = 20)
 ```
 
 ```{r}
 beh_naturalistic %>% 
+  mutate(has_loom = if_else(has_loom == 1, "Looming", "No looming"),
+         animal_type = fct_relevel(animal_type, "food", "dog", "cat")) %>% 
+  ggplot(aes(x = animal_type, y = arousal_rating, color = factor(has_loom))) +
+  geom_jitter(alpha = 0.2) +
+  geom_pointrange(stat = "summary", fun.data = mean_se) +
+  labs(x = "Object type",
+       y = "Arousal",
+       color = "Loom?") +
+  theme_bw(base_size = 20)
+```
+
+```{r}
+beh_naturalistic %>% 
+    mutate(has_loom = if_else(has_loom == 1, "Looming", "No looming"),
+         animal_type = fct_relevel(animal_type, "food", "dog", "cat")) %>% 
   ggplot(aes(x = animal_type, y = fear_rating, color = factor(has_loom))) +
   geom_jitter(alpha = 0.4) +
   geom_pointrange(stat = "summary", fun.data = mean_se) +
-  facet_wrap(~subj_num)
+  facet_wrap(~subj_num) +
+    labs(x = "Object type",
+       y = "Fear",
+       color = "Loom?") +
+  theme_bw(base_size = 20)
+```
+
+```{r}
+beh_naturalistic %>% 
+    mutate(has_loom = if_else(has_loom == 1, "Looming", "No looming"),
+         animal_type = fct_relevel(animal_type, "food", "dog", "cat")) %>% 
+  ggplot(aes(x = animal_type, y = fear_rating, color = factor(has_loom))) +
+  geom_jitter(alpha = 0.2) +
+  geom_pointrange(stat = "summary", fun.data = mean_se) +
+    labs(x = "Object type",
+       y = "Fear",
+       color = "Loom?") +
+  theme_bw(base_size = 20)
 ```
