@@ -25,7 +25,8 @@ tar_option_set(
   # Choose a controller that suits your needs. For example, the following
   # sets a controller with 2 workers which will run as local R processes:
   #
-controller = crew::crew_controller_local(workers = 4)
+controller = crew::crew_controller_local(workers = 4,
+                                         seconds_idle = 30)
   #
   # Alternatively, if you want workers to run on a high-performance computing
   # cluster, select a controller from the {crew.cluster} package. The following
@@ -53,7 +54,7 @@ options(clustermq.template = "clustermq.tmpl")
 # Install packages {{future}}, {{future.callr}}, and {{future.batchtools}} to allow use_targets() to configure tar_make_future() options.
 
 # Run the R scripts in the R/ folder with your custom functions:
-tar_source(c("R/"))
+tar_source(c("code/R/"))
 # source("other_functions.R") # Source other scripts as needed.
 
 ## other useful global vars ----
@@ -68,51 +69,55 @@ nback_block_threatenings <- c("dog", "frog", "spider", "above", "below")
 
 # target definition
 
-## targets: scripts in other project folders ----
+## targets: scripts (sometimes in other project folders) ----
+store_flynet.looming <- "/home/mthieu/Repos/emonet-py/ignore/_targets"
+ratings_ck2017 <- tar_read(ratings_ck2017, store = file.path(store_flynet.looming, "subjective"))
+weights_flynet <- tar_read(weights_flynet, store = file.path(store_flynet.looming, "subjective"))
+py_calc_flynet_activations <- tar_read(py_calc_flynet_activations, store = file.path(store_flynet.looming, "subjective"))
+py_resample_video_fps <- tar_read(py_resample_video_fps, store = file.path(store_flynet.looming, "subjective"))
+py_make_looming_video <- tar_read(py_make_looming_video, store = file.path(store_flynet.looming, "eyeblink"))
 
-ratings_ck2017 <- tar_read(ratings_ck2017, store = "/home/mthieu/Repos/emonet-py/ignore/_targets/subjective")
-
-targets_ext <- list(
- tar_target(
-   name = py_make_looming_video,
-   command = "/home/mthieu/Repos/emonet-py/python/make_looming_video.py",
-   format = "file"
- ),
+targets_scripts <- list(
  tar_target(
    name = py_get_video_metadata,
-   command = here::here("python", "get_video_metadata.py"),
+   command = here::here("code", "python", "get_video_metadata.py"),
    format = "file"
  ),
  tar_target(
    name = matlab_optimize_ga_trial_order,
-   command = here::here("matlab", "optimize_ga_trial_order.m"),
+   command = here::here("code", "matlab", "optimize_ga_trial_order.m"),
    format = "file"
  ),
  tar_target(
    name = matlab_spmbatch_smooth,
-   command = here::here("matlab", "smooth.m"),
+   command = here::here("code", "matlab", "smooth.m"),
    format = "file"
  ),
  tar_target(
    name = matlab_spmbatch_spec_est_level1,
-   command = here::here("matlab", "specify_estimate_level1.m"),
+   command = here::here("code", "matlab", "specify_estimate_level1.m"),
    format = "file"
  ),
  tar_target(
    name = matlab_spmbatch_spec_est_level2,
-   command = here::here("matlab", "specify_estimate_level2.m"),
+   command = here::here("code", "matlab", "specify_estimate_level2.m"),
    format = "file"
  ),
  tar_target(
    name = matlab_spmbatch_voi,
-   command = here::here("matlab", "voi_pilot_subject.m"),
+   command = here::here("code", "matlab", "voi.m"),
+   format = "file"
+ ),
+ tar_target(
+   name = matlab_parcellate_betas,
+   command = here::here("code", "matlab", "parcellate_betas_canlabtools.m"),
    format = "file"
  )
 )
 
 ## targets: looming stimuli of various kinds ----
 
-folder_videos_naturalistic <- "/home/data/eccolab/SPLaT/stimuli/youtube"
+folder_videos_naturalistic <- here::here("ignore", "stimuli", "videos", "naturalistic")
 
 targets_stimuli <- list(
   tar_target(
@@ -127,7 +132,7 @@ targets_stimuli <- list(
       
       # local ignore/stimuli/videos/controlled is symlinked to this folder as well
       # but write to the server-wide folder to share out permissions
-      out_path <- "/home/data/eccolab/SPLaT/stimuli/homemade/"
+      out_path <- here::here("ignore", "stimuli", "videos", "controlled")
       
       # generate _almost_ every crossing combination
       # but we only need reversed middle-near looms, not reversed middle-far recedes 
@@ -165,6 +170,27 @@ targets_stimuli <- list(
     format = "file"
   ),
   tar_target(
+    # these don't really need to get shown to humans, we can show them the native fps ones
+    # this is for the encoding models
+    name = videos_controlled_10fps,
+    command = {
+      videos_controlled
+      
+      out_path <- here::here("ignore", "stimuli", "videos", "controlled_10fps")
+      
+      with_path(conda_path,
+                code = system2("python",
+                               args = c(py_resample_video_fps,
+                                        "-i", here::here("ignore", "stimuli", "videos", "controlled"),
+                                        "-o", out_path))
+      )
+      
+      list.files(out_path,
+                 full.names = TRUE)
+    },
+    format = "file"
+  ),
+  tar_target(
     name = qualtrics.ids_videos_controlled,
     command = here::here("ignore", "stimuli", "videos", "controlled_qualtrics_ids.csv"),
     format = "file"
@@ -172,6 +198,27 @@ targets_stimuli <- list(
   tar_target(
     name = videos_naturalistic,
     command = list.files(folder_videos_naturalistic, pattern = ".mp4", full.names = TRUE),
+    format = "file"
+  ),
+  tar_target(
+    # these don't really need to get shown to humans, we can show them the native fps ones
+    # this is for the encoding models
+    name = videos_naturalistic_10fps,
+    command = {
+      videos_naturalistic
+      
+      out_path <- here::here("ignore", "stimuli", "videos", "naturalistic_10fps")
+      
+      with_path(conda_path,
+                code = system2("python",
+                               args = c(py_resample_video_fps,
+                                        "-i", folder_videos_naturalistic,
+                                        "-o", out_path))
+      )
+      
+      list.files(out_path,
+                 full.names = TRUE)
+    },
     format = "file"
   ),
   tar_target(
@@ -535,6 +582,56 @@ targets_stimlists_naturalistic <- list(
   )
 )
 
+## targets: encoding model predictions (depend only on stimuli) ----
+
+targets_encoding.models <- list(
+  tar_target(
+    name = activations.flynet_naturalistic,
+    command = {
+      # TODO: May still need to batch this in case there are too many videos to feed into one arg
+      video_paths <- paste(videos_naturalistic_10fps, collapse = " ")
+      out_path <- here::here("ignore",
+                             "data",
+                             "encoding",
+                             "activations.flynet_naturalistic.csv") 
+      
+      with_path(conda_path,
+                code = system2("python",
+                               args = c(py_calc_flynet_activations,
+                                        "-l 132",
+                                        paste("-i", video_paths),
+                                        paste("-o", out_path),
+                                        paste("-w", weights_flynet),
+                                        "-q activations")))
+      
+      out_path
+    },
+    format = "file"
+  ),
+  tar_target(
+    name = activations.flynet_controlled,
+    command = {
+      # TODO: May still need to batch this in case there are too many videos to feed into one arg
+      video_paths <- paste(videos_controlled_10fps, collapse = " ")
+      out_path <- here::here("ignore",
+                             "data",
+                             "encoding",
+                             "activations.flynet_controlled.csv") 
+      
+      with_path(conda_path,
+                code = system2("python",
+                               args = c(py_calc_flynet_activations,
+                                        "-l 132",
+                                        paste("-i", video_paths),
+                                        paste("-o", out_path),
+                                        paste("-w", weights_flynet),
+                                        "-q activations")))
+      
+      out_path
+    },
+    format = "file"
+  )
+)
 
 # targets: maps out by task x subject x run ----
 
@@ -549,7 +646,7 @@ n_trs_kept_naturalistic <- 989
 
 map_values <- crossing(task = c("controlled", "naturalistic"),
                        # best only to include already fmriprepped subjects
-                       subject = 1:7,
+                       subject = c(1:10, 12:15),
                        run = 1:5) %>% 
   filter(!(task == "naturalistic" & run > 3)) %>% 
   mutate(task = paste("task", task, sep = "-"),
@@ -723,22 +820,29 @@ targets_fmri_level1 <- list(
     tar_target(
       name = target_name,
       command = {
-        b # to target-depend it
-        n_confounds <- c %>% 
-          map_int(\(x) ncol(read_csv(x, col_names = FALSE))) %>% 
-          unique()
-        stopifnot(length(n_confounds) == 1)
-        get_beta_indices(events = a,
-                         n_confounds = n_confounds)
-      }
+        out_path <- file.path(dirname(input_name), "betas_by_parcel")
+        dir.create(out_path, showWarnings = FALSE)
+        
+        matlab_commands = c(
+          assign_variable("model_path", input_name),
+          assign_variable("out_folder", out_path),
+          call_script(matlab_parcellate_betas)
+        )
+        
+        with_path(
+          matlab_path,
+          run_matlab_code(matlab_commands)
+        )
+        
+        list.files(out_path, full.names = TRUE)
+        },
+      format = "file"
     ),
     values = map_values_across.run %>% 
       filter(task == "task-naturalistic") %>% 
       select(-combine_vals) %>% 
-      mutate(a = syms(paste("events_boxcar", suffix, sep = "_")),
-             b = syms(paste("spm_level1_smoothed.4mm_boxcar", suffix, sep = "_")),
-             c = syms(paste("confounds_prespm", suffix, sep = "_")),
-             target_name = syms(paste("beta.names_level1_smoothed.4mm_boxcar", suffix, sep = "_"))) %>% 
+      mutate(input_name = syms(paste("spm_level1_smoothed.4mm_boxcar", suffix, sep = "_")),
+             target_name = syms(paste("betas.by.parcel_smoothed.4mm_boxcar", suffix, sep = "_"))) %>% 
       select(-suffix)
   )
 )
@@ -822,6 +926,77 @@ targets_fmri_level2 <- list(
   )
 )
 
+## targets: maps out by parcel ROI (for whole-brainy analyses) ----
+
+map_values_across.run_by.parcel <- map_values_across.run %>% 
+  expand(nesting(suffix, task, subject), 
+         roi = tar_read(betas.by.parcel_smoothed.4mm_boxcar_task.naturalistic_sub.0001) %>% 
+           basename() %>% 
+           str_sub(start = 7L, end = -5L))
+
+map_values_across.task_by.parcel <- map_values_across.run_by.parcel %>% 
+  select(task, subject, roi) %>% 
+  mutate(across(everything(), \(x) str_replace_all(x, "-", "."))) %>% 
+  chop(subject) %>% 
+  rename(combine_vals = subject) %>% 
+  unite(col = "suffix", task, roi, remove = FALSE)
+
+targets_wholebrain <- list(
+  tar_eval(
+    tar_target(
+      name = target_name,
+      command = {
+        all_betas <- input_name
+        these_betas <- all_betas[grepl(roi, all_betas)]
+        
+        these_betas %>%
+          read_csv() %>% 
+          # VarX and Row are the names that come in from matlab writetable()
+          pivot_longer(cols = starts_with("Var")) %>% 
+          pivot_wider(names_from = Row) %>% 
+          select(-name) %>%
+          cor() %>% 
+          as_tibble(rownames = "condition_row") %>% 
+          pivot_longer(cols = -condition_row,
+                       names_to = "condition_col",
+                       values_to = "correlation")
+      }
+    ),
+    values = map_values_across.run_by.parcel %>% 
+      filter(task == "task-naturalistic") %>% 
+      mutate(input_name = syms(sprintf("betas.by.parcel_smoothed.4mm_boxcar_%s", suffix)),
+             target_name = syms(sprintf("rdms_smoothed.4mm_boxcar_%s_%s", suffix, roi))) %>% 
+      select(target_name, input_name, roi)
+  ),
+  tar_eval(
+    tar_target(
+      name = target_name,
+      command = {
+        all_betas <- input_name
+        these_betas <- all_betas[grepl(roi, all_betas)]
+        
+        these_betas %>%
+          read_csv() %>% 
+          # VarX and Row are the names that come in from matlab writetable()
+          pivot_longer(cols = starts_with("Var")) %>% 
+          pivot_wider(names_from = Row) %>% 
+          select(-name) %>%
+          cor() %>% 
+          as_tibble(rownames = "condition_row") %>% 
+          pivot_longer(cols = -condition_row,
+                       names_to = "condition_col",
+                       values_to = "correlation")
+      }
+    ),
+    values = map_values_across.task_by.parcel %>% 
+      filter(task == "task-naturalistic") %>% 
+    
+    mutate(input_names = pmap(list(task, roi, combine_vals), \(a, b, c) syms(sprintf("betas.by.parcel_smoothed.4mm_boxcar_%s_%s_%s", a, c, b))),
+           target_name = syms(sprintf("betas.by.parcel_smoothed.4mm_boxcar_%s_%s", task, roi))) %>% 
+      select(target_name, input_names)
+  )
+)
+
 ## targets: behavioral data ----
 
 targets_beh <- list(
@@ -838,13 +1013,15 @@ targets_beh <- list(
         # for whatever reason this was not working when it was externalized to another function...?
         # tar_eval problems?
         events_raw_task.controlled %>% 
-          map(read_csv) %>% 
+          map(\(x) read_csv(x) %>% 
+                mutate(frameRate = as.character(frameRate))) %>% 
           bind_rows() %>% 
           # Drop the wait-for-trigger screen and last row of ISI before the end-of-run screen
           filter(!is.na(miniblock_file)) %>% 
           # we want both of the RT measures to start from the beginning of the video display
           mutate(video_late_resp.rt = video_late_resp.rt + video_late_resp.started - video_resp.started,
-                 rt = coalesce(video_resp.rt, video_late_resp.rt)) %>% 
+                 rt = coalesce(video_resp.rt, video_late_resp.rt),
+                 participant = as.integer(participant)) %>% 
           select(subj_num = participant,
                  run_num = run,
                  threatening,
@@ -861,14 +1038,14 @@ targets_beh <- list(
                  across(ends_with("rating"), \(x) x[length(x)])) %>% 
           mutate(attended = case_match(attended, "LOCATION" ~ "hemifield", "ANIMAL" ~ "animal"),
                  resp_expected = if_else(attended == "hemifield",
-                                           hemifield == lag(hemifield),
-                                           animal_type == lag(animal_type)),
-                   resp_expected = coalesce(resp_expected, FALSE)) %>% 
-            ungroup() %>% 
+                                         hemifield == lag(hemifield),
+                                         animal_type == lag(animal_type)),
+                 resp_expected = coalesce(resp_expected, FALSE)) %>% 
+          ungroup() %>% 
           # remove the rows for the rating trials after the ratings are already filled in upward
           filter(!is.na(animal_type))
-        }
-    ),
+      }
+  ),
   tar_target(
     name = events_raw_task.naturalistic,
     # note! this does not use the subjects listed out in map_values
@@ -883,10 +1060,11 @@ targets_beh <- list(
   tar_target(
     name = beh_naturalistic,
     command = events_raw_task.naturalistic %>% 
-        map(read_csv) %>% 
-        bind_rows() %>% 
-        select(subj_num = participant, video_id, has_loom, animal_type, ends_with("rating")) %>% 
-        filter(!is.na(video_id))
+      map(read_csv) %>% 
+      bind_rows() %>% 
+      select(subj_num = participant, video_id, has_loom, animal_type, ends_with("rating")) %>% 
+      mutate(subj_num = as.integer(subj_num)) %>% 
+      filter(!is.na(video_id))
   ),
   # from 3 colleagues I was able to shake down for ratings in March 2024, lol
   tar_target(
@@ -954,12 +1132,14 @@ targets_beh <- list(
 )
 
 list(
-  targets_ext,
+  targets_scripts,
   targets_stimuli,
   targets_stimlists_nback,
   targets_stimlists_naturalistic,
+  targets_encoding.models,
   targets_fmri,
   targets_fmri_level1,
   targets_fmri_level2,
+  targets_wholebrain,
   targets_beh
 )
