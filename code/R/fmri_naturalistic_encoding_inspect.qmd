@@ -1,0 +1,33 @@
+---
+title: "naturalistic looming fMRI encoding to self report"
+format: html
+---
+
+```{r}
+require(tidyverse)
+require(rlang)
+
+target_store <- here::here("ignore", "_targets")
+
+stims <- targets::tar_read(stims_naturalistic, store = target_store)
+
+beh <- targets::tar_read(beh_naturalistic, store = target_store) %>% 
+  filter(!(subj_num %in% c(5, 11)))
+
+activations.flynet <- targets::tar_read(activations.flynet_naturalistic, store = target_store) %>% 
+  read_csv() %>% 
+  rename_with(\(x) paste0("unit_", x), -c(frame, video)) %>% 
+  nest(activations = -video)
+
+hitprobs.flynet <- targets::tar_read(hitprobs.flynet_naturalistic, store = target_store) %>% 
+  read_csv()
+
+# TEMPORARY, EVENTUALLY REPLACE THIS WITH THE TARGETS CALL
+# one subject's target contains many paths, one per ROI
+x <- read_csv("/home/data/eccolab/SPLaT_fMRI/ignore/models/task-naturalistic/acq-mb8/sub-0001/model-boxcar/smoothed-4mm/betas_by_parcel/betas_Ctx_VVC_L.csv") %>% 
+  rename_with(\(x) str_replace(x, "Var", "voxel_"), everything()) %>% 
+  separate_wider_delim(cols = Row, delim = "_", names = c("animal_type", "has_loom", "video1", "video2")) %>% 
+  unite(col = "video", video1, video2) %>% 
+  mutate(has_loom = as.integer(str_sub(has_loom, start = -1L)),
+         video = paste0(video, ".mp4"))
+```
