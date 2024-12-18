@@ -74,13 +74,17 @@ store_flynet.looming <- "/home/mthieu/Repos/emonet-py/ignore/_targets"
 ratings_ck2017 <- tar_read(ratings_ck2017, store = file.path(store_flynet.looming, "subjective"))
 weights_flynet <- tar_read(weights_flynet, store = file.path(store_flynet.looming, "subjective"))
 py_calc_flynet_activations <- tar_read(py_calc_flynet_activations, store = file.path(store_flynet.looming, "subjective"))
-py_resample_video_fps <- tar_read(py_resample_video_fps, store = file.path(store_flynet.looming, "subjective"))
 py_make_looming_video <- tar_read(py_make_looming_video, store = file.path(store_flynet.looming, "eyeblink"))
 
 targets_scripts <- list(
  tar_target(
    name = py_get_video_metadata,
    command = here::here("code", "python", "get_video_metadata.py"),
+   format = "file"
+ ),
+ tar_target(
+   name = py_resample_video_fps,
+   command = here::here("code", "python", "resample_video_fps.py"),
    format = "file"
  ),
  tar_target(
@@ -112,6 +116,11 @@ targets_scripts <- list(
    name = matlab_parcellate_betas,
    command = here::here("code", "matlab", "parcellate_betas_canlabtools.m"),
    format = "file"
+ ),
+ tar_target(
+   name = matlab_fit_pls,
+   command = here::here("code", "matlab", "fit_pls_canlabtools.m"),
+   format = "file"
  )
 )
 
@@ -120,6 +129,14 @@ targets_scripts <- list(
 folder_videos_naturalistic <- here::here("ignore", "stimuli", "videos", "naturalistic")
 
 targets_stimuli <- list(
+  # this will really only be used to generate placeholder activations
+  # to patch into a full encoding model activation timecourse for the naturalistic task
+  # I made it by running a fixation screenshot in iMovie for 1 second like a clown
+  tar_target(
+    video_fixation,
+    command = here::here("ignore", "stimuli", "videos", "fixation.mp4"),
+    format = "file"
+  ),
   tar_target(
     name = images_controlled,
     command = list.files(here::here("ignore", "stimuli", "images", "use"),
@@ -586,9 +603,30 @@ targets_stimlists_naturalistic <- list(
 
 targets_encoding.models <- list(
   tar_target(
+    name = activations.flynet_fixation,
+    command = {
+      video_path <- video_fixation
+      out_path <- here::here("ignore",
+                             "data",
+                             "encoding",
+                             "activations.flynet_fixation.csv") 
+      
+      with_path(conda_path,
+                code = system2("python",
+                               args = c(py_calc_flynet_activations,
+                                        "-l 132",
+                                        paste("-i", video_path),
+                                        paste("-o", out_path),
+                                        paste("-w", weights_flynet),
+                                        "-q activations")))
+      
+      out_path
+    },
+    format = "file"
+  ),
+  tar_target(
     name = activations.flynet_naturalistic,
     command = {
-      # TODO: May still need to batch this in case there are too many videos to feed into one arg
       video_paths <- paste(videos_naturalistic_10fps, collapse = " ")
       out_path <- here::here("ignore",
                              "data",
@@ -603,6 +641,28 @@ targets_encoding.models <- list(
                                         paste("-o", out_path),
                                         paste("-w", weights_flynet),
                                         "-q activations")))
+      
+      out_path
+    },
+    format = "file"
+  ),
+  tar_target(
+    name = hitprobs.flynet_naturalistic,
+    command = {
+      video_paths <- paste(videos_naturalistic_10fps, collapse = " ")
+      out_path <- here::here("ignore",
+                             "data",
+                             "encoding",
+                             "hitprobs.flynet_naturalistic.csv") 
+      
+      with_path(conda_path,
+                code = system2("python",
+                               args = c(py_calc_flynet_activations,
+                                        "-l 132",
+                                        paste("-i", video_paths),
+                                        paste("-o", out_path),
+                                        paste("-w", weights_flynet),
+                                        "-q hit_probs")))
       
       out_path
     },
@@ -646,7 +706,9 @@ n_trs_kept_naturalistic <- 989
 
 map_values <- crossing(task = c("controlled", "naturalistic"),
                        # best only to include already fmriprepped subjects
-                       subject = c(1:10, 12:15),
+                       # EXCLUDE FOR MOTION: 5, 11
+                       # any other missing numbers have just not been fmriprepped yet
+                       subject = c(1:4, 6:10, 12:15, 17, 19:20),
                        run = 1:5) %>% 
   filter(!(task == "naturalistic" & run > 3)) %>% 
   mutate(task = paste("task", task, sep = "-"),
@@ -665,7 +727,7 @@ targets_fmri <- list(
       format = "file"
     ),
     tar_target(
-      events_boxcar,
+      events,
       command = {
         # n_trs fed in here is not including any TRs during the 8-second wait period
         # it counts from the first TR whose acquisition crosses the 8-second boundary
@@ -692,9 +754,23 @@ targets_fmri <- list(
     tar_target(
       events_prespm_boxcar,
       command = {
-        matlab_info <- format_events_matlab(onsets = events_boxcar,
+        matlab_info <- format_events_matlab(onsets = events,
                                             raw_path = events_raw,
                                             onset_type = "boxcar")
+        with_path(
+          matlab_path,
+          run_matlab_code(matlab_info$matlab_commands)
+        )
+        matlab_info$out_path
+      },
+      format = "file"
+    ),
+    tar_target(
+      events_prespm_endspike,
+      command = {
+        matlab_info <- format_events_matlab(onsets = events,
+                                            raw_path = events_raw,
+                                            onset_type = "endspike")
         with_path(
           matlab_path,
           run_matlab_code(matlab_info$matlab_commands)
@@ -728,6 +804,36 @@ targets_fmri <- list(
                            script = matlab_spmbatch_smooth),
       format = "file"
     )
+  ),
+  # stuff that's currently only being done on one task
+  # move it into the main tar_map if it does eventually get done on both
+  tar_eval(
+    tar_target(
+      target_name,
+      command = {
+        out_path <- here::here("ignore", "outputs", out_filename)
+        
+        make_encoding_timecourse(onsets = input_name,
+                                 path_stim_activations = activations.flynet_naturalistic,
+                                 run_duration = n_trs_kept_naturalistic * tr_duration_mb8) %>% 
+          write_csv(file = out_path,
+                    # because they're going into evil MATLAB
+                    col_names = FALSE)
+        
+        out_path
+        },
+      format = "file"
+    ),
+    values = map_values %>% 
+      # we only need the full single-trial events dataframes for naturalistic
+      # to prepare to set the single-trial beta niftis as targets later
+      filter(endsWith(task, "naturalistic")) %>% 
+      mutate(across(everything(), \(x) str_replace(x, "-", ".")),
+             input_name = paste("events", task, subject, run, sep = "_"),
+             target_name = paste("activations.flynet", task, subject, run, sep = "_"),
+             out_filename = paste(task, subject, run,"acts-flynet.csv", sep = "_"),
+             across(c(input_name, target_name), syms)) %>% 
+      select(input_name, target_name, out_filename)
   )
 )
 
@@ -748,6 +854,11 @@ map_values_across.run <- map_values %>%
   # so that the n column counts the number of valid runs per this subject/task
   # use the n column later to populate the valid target names to combine
   count(task, subject) %>% 
+  expand(nesting(task, subject, n), 
+         model_type = c("boxcar", "endspike")) %>% 
+  arrange(task, subject, model_type) %>% 
+  # because some of the targets that depend on this aren't SPM models
+  # so for those we'll pop model_type in before the final suffix
   unite(suffix, task, subject, remove = FALSE) %>% 
   mutate(suffix = str_replace_all(suffix, "-", "."),
          combine_vals = map(n, \(x) 1:x)) %>% 
@@ -760,7 +871,9 @@ targets_fmri_level1 <- list(
       command = vctrs::vec_c(!!!input_names),
       format = "file"
     ),
-    values = make_eval_values(map_values_across.run, summarize_fmt = "run.%02d", target_prefix = "bold_smoothed.4mm")
+    values = map_values_across.run %>% 
+      distinct(suffix, task, subject, combine_vals) %>% 
+      make_eval_values(summarize_fmt = "run.%02d", target_prefix = "bold_smoothed.4mm")
   ),
   tar_eval(
     expr = tar_target(
@@ -772,8 +885,9 @@ targets_fmri_level1 <- list(
     values = map_values_across.run %>% 
       # we only need the full single-trial events dataframes for naturalistic
       # to prepare to set the single-trial beta niftis as targets later
-      filter(startsWith(suffix, "task.naturalistic")) %>% 
-      make_eval_values(summarize_fmt = "run.%02d", target_prefix = "events_boxcar")
+      filter(endsWith(task, "naturalistic")) %>% 
+      distinct(suffix, task, subject, combine_vals) %>% 
+      make_eval_values(summarize_fmt = "run.%02d", target_prefix = "events")
   ),
   tar_eval(
     expr = tar_target(
@@ -781,7 +895,9 @@ targets_fmri_level1 <- list(
       command = vctrs::vec_c(!!!input_names),
       format = "file"
     ),
-    values = make_eval_values(map_values_across.run, summarize_fmt = "run.%02d", target_prefix = "events_prespm_boxcar")
+    values = map_values_across.run %>% 
+      unite(col = "suffix", model_type, suffix) %>% 
+      make_eval_values(summarize_fmt = "run.%02d", target_prefix = "events_prespm")
   ),
   tar_eval(
     expr = tar_target(
@@ -789,7 +905,20 @@ targets_fmri_level1 <- list(
       command = vctrs::vec_c(!!!input_names),
       format = "file"
     ),
-    values = make_eval_values(map_values_across.run, summarize_fmt = "run.%02d", target_prefix = "confounds_prespm")
+    values = map_values_across.run %>% 
+      distinct(suffix, task, subject, combine_vals) %>% 
+      make_eval_values(summarize_fmt = "run.%02d", target_prefix = "confounds_prespm")
+  ),
+  tar_eval(
+    expr = tar_target(
+      target_name,
+      command = vctrs::vec_c(!!!input_names),
+      format = "file"
+    ),
+    values = map_values_across.run %>% 
+      filter(endsWith(task, "naturalistic")) %>% 
+      distinct(suffix, task, subject, combine_vals) %>% 
+      make_eval_values(summarize_fmt = "run.%02d", target_prefix = "activations.flynet")
   ),
   tar_eval(
     tar_target(
@@ -797,7 +926,8 @@ targets_fmri_level1 <- list(
       command = {
         this_end_tr <- if_else(task == "task-controlled", n_trs_kept_controlled, n_trs_kept_naturalistic)
         # the output file to be tracked is the SPM.mat file
-        spm_spec_est_level1(model_path = file.path("ignore", "models", task, "acq-mb8", subject, "model-boxcar", "smoothed-4mm"),
+        this_model_type <- paste0("model-", model_type)
+        spm_spec_est_level1(model_path = file.path("ignore", "models", task, "acq-mb8", subject, this_model_type, "smoothed-4mm"),
                             tr_duration = tr_duration_mb8,
                             trs_to_use = 1:this_end_tr + (disdaq_duration %/% tr_duration_mb8),
                             # these three need to take vectors containing the values for each run
@@ -811,9 +941,9 @@ targets_fmri_level1 <- list(
     values = map_values_across.run %>% 
       select(-combine_vals) %>% 
       mutate(a = syms(paste("bold_smoothed.4mm", suffix, sep = "_")),
-             b = syms(paste("events_prespm_boxcar", suffix, sep = "_")),
+             b = syms(paste("events_prespm", model_type, suffix, sep = "_")),
              c = syms(paste("confounds_prespm", suffix, sep = "_")),
-             target_name = syms(paste("spm_level1_smoothed.4mm_boxcar", suffix, sep = "_"))) %>% 
+             target_name = syms(paste("spm_level1_smoothed.4mm", model_type, suffix, sep = "_"))) %>% 
       select(-suffix)
   ),
   tar_eval(
@@ -841,8 +971,8 @@ targets_fmri_level1 <- list(
     values = map_values_across.run %>% 
       filter(task == "task-naturalistic") %>% 
       select(-combine_vals) %>% 
-      mutate(input_name = syms(paste("spm_level1_smoothed.4mm_boxcar", suffix, sep = "_")),
-             target_name = syms(paste("betas.by.parcel_smoothed.4mm_boxcar", suffix, sep = "_"))) %>% 
+      mutate(input_name = syms(paste("spm_level1_smoothed.4mm", model_type, suffix, sep = "_")),
+             target_name = syms(paste("betas.by.parcel_smoothed.4mm", model_type, suffix, sep = "_"))) %>% 
       select(-suffix)
   )
 )
@@ -850,29 +980,33 @@ targets_fmri_level1 <- list(
 ## targets: maps out by task x contrast (combines across subject) ----
 
 map_values_across.task <- map_values_across.run %>% 
-  select(task, subject) %>% 
+  select(task, subject, model_type) %>% 
   mutate(across(everything(), \(x) str_replace_all(x, "-", "."))) %>% 
   chop(subject) %>% 
   # now there are 2 rows for the 2 tasks
   # this is just easiest to directly make a list-column of length 2 I think
-  mutate(contrast = list(c("attend.animal",
-                            "dog",
-                            "frog",
-                            "spider",
-                            "above",
-                            "looming",
-                            "looming.baseline",
-                            "stimuli",
-                            "ratings"),
-                          c("dog",
-                            "frog",
-                            "spider",
-                            "looming",
-                            "looming.baseline",
-                            "stimuli")),
+  mutate(contrast = if_else(endsWith(task, "controlled"),
+                            list(c("attend.animal",
+                                   "dog",
+                                   "frog",
+                                   "spider",
+                                   "above",
+                                   "looming",
+                                   "looming.baseline",
+                                   "stimuli",
+                                   "ratings")),
+                            list(c("dog",
+                                   "frog",
+                                   "spider",
+                                   "looming",
+                                   "looming.baseline",
+                                   "stimuli"))),
          contrast_num = map(contrast, \(x) 1:length(x))) %>% 
   unchop(cols = c(contrast, contrast_num)) %>% 
-  rename(suffix = task, combine_vals = subject)
+  rename(suffix = task, combine_vals = subject) %>% 
+  arrange(suffix, contrast_num, model_type)
+
+### SPM level 2 group analyses ----
 
 targets_fmri_level2 <- list(
   # this target factory is still split out by subject, but very much pre-combining across subject
@@ -890,9 +1024,9 @@ targets_fmri_level2 <- list(
       # bc this one doesn't yet combine by subject. wait till the next one!
       unchop(combine_vals) %>% 
       mutate(combine_vals = str_replace_all(combine_vals, "-", "."),
-             dep_name = syms(paste("spm_level1_smoothed.4mm_boxcar", suffix, combine_vals, sep = "_")),
+             dep_name = syms(paste("spm_level1_smoothed.4mm", model_type, suffix, combine_vals, sep = "_")),
              # THIS IS THE TARGET NAME FORMAT FOR THE DOWNSTREAM ONES! U CAN DO IT
-             target_name = syms(sprintf("con.%s_smoothed.4mm_boxcar_%s_%s", contrast, suffix, combine_vals))) %>% 
+             target_name = syms(sprintf("con.%s_smoothed.4mm_%s_%s_%s", contrast, model_type, suffix, combine_vals))) %>% 
       select(target_name, dep_name, contrast_num)
   ),
   tar_eval(
@@ -902,8 +1036,8 @@ targets_fmri_level2 <- list(
       format = "file"
     ),
     values = map_values_across.task %>% 
-      mutate(input_names = pmap(list(contrast, suffix, combine_vals), \(a, b, c) syms(sprintf("con.%s_smoothed.4mm_boxcar_%s_%s", a, b, c))),
-             target_name = syms(sprintf("con.%s_smoothed.4mm_boxcar_%s", contrast, suffix))) %>% 
+      mutate(input_names = pmap(list(contrast, model_type, suffix, combine_vals), \(a, b, c, d) syms(sprintf("con.%s_smoothed.4mm_%s_%s_%s", a, b, c, d))),
+             target_name = syms(sprintf("con.%s_smoothed.4mm_%s_%s", contrast, model_type, suffix))) %>% 
       select(target_name, input_names)
   ),
   tar_eval(
@@ -911,7 +1045,8 @@ targets_fmri_level2 <- list(
       name = target_name,
       command = {
         # the output file to be tracked is the SPM.mat file
-        spm_spec_est_level2(model_path = file.path("ignore", "models", str_replace(task, "\\.", "-"), "acq-mb8", "group", "model-boxcar", "smoothed-4mm", contrast),
+        this_model_type <- paste0("model-", model_type)
+        spm_spec_est_level2(model_path = file.path("ignore", "models", str_replace(task, "\\.", "-"), "acq-mb8", "group", this_model_type, "smoothed-4mm", contrast),
                             # this need to take a vector containing the values for each subject
                             cons = input_names,
                             con_name = contrast,
@@ -920,26 +1055,69 @@ targets_fmri_level2 <- list(
       format = "file"
     ),
     values = map_values_across.task %>% 
-      mutate(input_names = syms(sprintf("con.%s_smoothed.4mm_boxcar_%s", contrast, suffix)),
-             target_name = syms(sprintf("level2.%s_smoothed.4mm_boxcar_%s", contrast, suffix))) %>% 
-      select(target_name, input_names, task = suffix, contrast)
+      mutate(input_names = syms(sprintf("con.%s_smoothed.4mm_%s_%s", contrast, model_type, suffix)),
+             target_name = syms(sprintf("level2.%s_smoothed.4mm_%s_%s", contrast, model_type, suffix))) %>% 
+      select(target_name, input_names, task = suffix, contrast, model_type)
+  )
+)
+
+### canlabtools-based group analyses so help me god ----
+
+targets_fmri_canlabtools <- list(
+  tar_eval(
+    expr = tar_target(
+      activations.flynet_task.naturalistic_all.subs,
+      # lists cannot be format = "file"
+      # yeah sorta goofy but whatevs
+      command = list(!!!combine_vals)
+    ),
+    values = map_values_across.task %>% 
+      distinct(combine_vals) %>% 
+      unchop(combine_vals) %>% 
+      mutate(combine_vals = syms(paste0("activations.flynet_task.naturalistic_", combine_vals))) %>% 
+      chop(combine_vals)
+  ),
+  tar_eval(
+    expr = tar_target(
+      bold_smoothed.4mm_task.naturalistic_all.subs,
+      command = list(!!!combine_vals)
+    ),
+    values = map_values_across.task %>% 
+      distinct(combine_vals) %>% 
+      unchop(combine_vals) %>% 
+      mutate(combine_vals = syms(paste0("bold_smoothed.4mm_task.naturalistic_", combine_vals))) %>% 
+      chop(combine_vals)
+  ),
+  tar_target(
+    perf_encoding.flynet_task.naturalistic_region.sc,
+    command = canlabtools_fit_encoding_pls(out_path = here::here("ignore",
+                                                                 "outputs", 
+                                                                 "naturalistic_perf.flynet_sc.csv"),
+                                           tr_duration = tr_duration_mb8,
+                                           trs_to_use = 1:n_trs_kept_naturalistic + (disdaq_duration %/% tr_duration_mb8),
+                                           # these three need to take vectors containing the values for each run
+                                           bolds = bold_smoothed.4mm_task.naturalistic_all.subs,
+                                           activations = activations.flynet_task.naturalistic_all.subs,
+                                           script = matlab_fit_pls),
+    format = "file"
   )
 )
 
 ## targets: maps out by parcel ROI (for whole-brainy analyses) ----
 
 map_values_across.run_by.parcel <- map_values_across.run %>% 
-  expand(nesting(suffix, task, subject), 
+  expand(nesting(suffix, task, subject, model_type), 
          roi = tar_read(betas.by.parcel_smoothed.4mm_boxcar_task.naturalistic_sub.0001) %>% 
            basename() %>% 
-           str_sub(start = 7L, end = -5L))
+           str_sub(start = 7L, end = -5L)) %>% 
+  unite(col = "suffix", model_type, suffix, remove = FALSE)
 
 map_values_across.task_by.parcel <- map_values_across.run_by.parcel %>% 
-  select(task, subject, roi) %>% 
+  select(task, subject, roi, model_type) %>% 
   mutate(across(everything(), \(x) str_replace_all(x, "-", "."))) %>% 
   chop(subject) %>% 
   rename(combine_vals = subject) %>% 
-  unite(col = "suffix", task, roi, remove = FALSE)
+  unite(col = "suffix", model_type, task, roi, remove = FALSE)
 
 targets_wholebrain <- list(
   tar_eval(
@@ -964,35 +1142,20 @@ targets_wholebrain <- list(
     ),
     values = map_values_across.run_by.parcel %>% 
       filter(task == "task-naturalistic") %>% 
-      mutate(input_name = syms(sprintf("betas.by.parcel_smoothed.4mm_boxcar_%s", suffix)),
-             target_name = syms(sprintf("rdms_smoothed.4mm_boxcar_%s_%s", suffix, roi))) %>% 
+      mutate(input_name = syms(sprintf("betas.by.parcel_smoothed.4mm_%s", suffix)),
+             target_name = syms(sprintf("rdms_smoothed.4mm_%s_%s", suffix, roi))) %>% 
       select(target_name, input_name, roi)
   ),
   tar_eval(
     tar_target(
       name = target_name,
-      command = {
-        all_betas <- input_name
-        these_betas <- all_betas[grepl(roi, all_betas)]
-        
-        these_betas %>%
-          read_csv() %>% 
-          # VarX and Row are the names that come in from matlab writetable()
-          pivot_longer(cols = starts_with("Var")) %>% 
-          pivot_wider(names_from = Row) %>% 
-          select(-name) %>%
-          cor() %>% 
-          as_tibble(rownames = "condition_row") %>% 
-          pivot_longer(cols = -condition_row,
-                       names_to = "condition_col",
-                       values_to = "correlation")
-      }
+      command = bind_rows(!!!input_names,
+                          .id = "target_name")
     ),
     values = map_values_across.task_by.parcel %>% 
       filter(task == "task-naturalistic") %>% 
-    
-    mutate(input_names = pmap(list(task, roi, combine_vals), \(a, b, c) syms(sprintf("betas.by.parcel_smoothed.4mm_boxcar_%s_%s_%s", a, c, b))),
-           target_name = syms(sprintf("betas.by.parcel_smoothed.4mm_boxcar_%s_%s", task, roi))) %>% 
+      mutate(input_names = pmap(list(model_type, task, roi, combine_vals), \(a, b, c, d) syms(sprintf("rdms_smoothed.4mm_%s_%s_%s_%s", a, b, d, c))),
+             target_name = syms(sprintf("rdms_smoothed.4mm_%s", suffix))) %>% 
       select(target_name, input_names)
   )
 )
@@ -1141,5 +1304,6 @@ list(
   targets_fmri_level1,
   targets_fmri_level2,
   targets_wholebrain,
+  targets_fmri_canlabtools,
   targets_beh
 )

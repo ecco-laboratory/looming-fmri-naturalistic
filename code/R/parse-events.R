@@ -142,6 +142,9 @@ relabel_onset_looming_nback <- function (onsets) {
 }
 
 format_events_matlab <- function (onsets, raw_path, onset_type) {
+  
+  if (onset_type == "endspike") onsets %<>% realign_onset_end_spike()
+  
   # expects long by trial with 3 columns: condition, onset, duration
   onsets %<>%
     mutate(across(where(is.numeric), \(x) round(x, digits = 3))) %>% 
@@ -183,6 +186,90 @@ format_events_matlab <- function (onsets, raw_path, onset_type) {
   # we do need out_path to come out for targets tracking
   # even though it's already in the save part of matlab_commands
   return (list(out_path = out_mat_path, matlab_commands = matlab_commands))
+}
+
+## constructing encoding model activation timecourses from onset orders ----
+
+make_encoding_timecourse <- function (onsets, 
+                                      path_stim_activations,
+                                      tr_duration,
+                                      run_duration,
+                                      fixation_activation = NULL, 
+                                      stim_fps = 10L) {
+  
+  # these come in from python so the unit numbers in the col names start indexing at 0
+  stim_activations <- read_csv(path_stim_activations, name_repair = "unique") %>% 
+    select(-frame) %>% 
+    nest(activations = -video)
+  
+  onsets %<>%
+    mutate(video = paste0(str_sub(condition, start = -7L), ".mp4"))
+  
+  if (!is.null(fixation_activation)) {
+    # use the 'veridical' activations from the fixation video through FlyNet or wherever
+    # 2024-12-16: NOT RECOMMENDED BY MONICA bc the baseline activation for zero-motion stimuli is kind of high
+    # and sure, maybe somewhere like SC is doing defaulty stuff where task activation actually deactivates it
+    # but maybe it isn't??
+  } else {
+    # and then set the activations during fixation to the mean of each unit's activation to all the stims in this run
+    fixation_activation <- stim_activations %>% 
+      semi_join(onsets, by = "video") %>% 
+      unnest(activations) %>% 
+      summarize(across(-video, mean)) %>% 
+      mutate(video = "fixation")
+  }
+  
+  # fencepost first condition! 
+  # there may be some tiny amount of included fixation before the very first onset
+  # if it's more than 1 frame's worth of time we should include it
+  if (floor(onsets$onset[1] * stim_fps) > 0) {
+    timecourse <- rep(list(fixation_activation), times = floor(onsets$onset[1] * stim_fps)) %>% 
+      bind_rows() 
+  } else {
+    timecourse <- tibble()
+  }
+
+  for (i in 1:nrow(onsets)) {
+    these_activations <- stim_activations %>% 
+      filter(video == onsets$video[i]) %>% 
+      # unnest to keep the video column. in case it's useful later!
+      unnest(activations)
+    
+    # if the current stim isn't in the dictionary of all stim activations, something is wrong
+    stopifnot(nrow(these_activations) > 0)
+    
+    timecourse <- timecourse %>% 
+      bind_rows(these_activations)
+
+    # calculate the time from the current end of the timecourse to the next onset
+    # and generate/append the requisite amount of fixation
+    # if it's the very last video, calculate the time to the end of run
+    if (i < nrow(onsets)) next_onset <- onsets$onset[i+1] else next_onset <- run_duration
+    
+    
+    this_iti <- next_onset - nrow(timecourse)/stim_fps
+    this_fixation_activation <- rep(list(fixation_activation), 
+                                    times = round(this_iti * stim_fps)) %>% 
+      bind_rows()
+    
+    timecourse <- timecourse %>% 
+      bind_rows(this_fixation_activation)
+  }
+  
+  # linear interpolate every column into TR frequency
+  out <- timecourse %>% 
+    select(-video) %>% 
+    as.list() %>% 
+    # approx only works colwise so cheese the map-ing
+    map(\(x) approx(1:length(x)/stim_fps, 
+                    x, 
+                    xout = seq(from = tr_duration_mb8, 
+                               to = run_duration, 
+                               by = tr_duration_mb8)) %>% 
+          pluck("y")) %>% 
+    as_tibble()
+  
+  return (out)
 }
 
 ## patching confound cols in to get the corresponding beta.nii indices ----
