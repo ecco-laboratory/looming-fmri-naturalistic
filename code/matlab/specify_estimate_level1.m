@@ -26,6 +26,7 @@ batch_spec_est{1}.spm.stats.fmri_spec.timing.RT = tr_duration; % this is TR but 
 batch_spec_est{1}.spm.stats.fmri_spec.timing.fmri_t = 16;
 batch_spec_est{1}.spm.stats.fmri_spec.timing.fmri_t0 = 8;
 
+% loop over runs, popping in the path for each run's niftis/onsets/confound regressors
 for i=1:length(paths_confounds)
     % format with the tr_nums here
     % so that the input call string from R doesn't get CRAZY long
