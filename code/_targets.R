@@ -88,6 +88,11 @@ targets_scripts <- list(
    format = "file"
  ),
  tar_target(
+   name = py_calc_alexnet_activations,
+   command = here::here("code", "python", "calc_alexnet_activations.py"),
+   format = "file"
+ ),
+ tar_target(
    name = matlab_optimize_ga_trial_order,
    command = here::here("code", "matlab", "optimize_ga_trial_order.m"),
    format = "file"
@@ -690,6 +695,44 @@ targets_encoding.models <- list(
       out_path
     },
     format = "file"
+  ),
+  tar_target(
+    name = activations.alexnet_naturalistic,
+    command = {
+      video_paths <- paste(videos_naturalistic_10fps, collapse = " ")
+      out_path <- here::here("ignore",
+                             "data",
+                             "encoding",
+                             "activations.alexnet_naturalistic.csv") 
+      
+      with_path(conda_path,
+                code = system2("python",
+                               args = c(py_calc_alexnet_activations,
+                                        paste("-i", video_paths),
+                                        paste("-o", out_path))))
+      
+      out_path
+    },
+    format = "file"
+  ),
+  tar_target(
+    name = activations.alexnet_controlled,
+    command = {
+      video_paths <- paste(videos_controlled_10fps, collapse = " ")
+      out_path <- here::here("ignore",
+                             "data",
+                             "encoding",
+                             "activations.alexnet_controlled.csv") 
+      
+      with_path(conda_path,
+                code = system2("python",
+                               args = c(py_calc_alexnet_activations,
+                                        paste("-i", video_paths),
+                                        paste("-o", out_path))))
+      
+      out_path
+    },
+    format = "file"
   )
 )
 
@@ -706,9 +749,9 @@ n_trs_kept_naturalistic <- 989
 
 map_values <- crossing(task = c("controlled", "naturalistic"),
                        # best only to include already fmriprepped subjects
-                       # EXCLUDE FOR MOTION: 5, 11
+                       # EXCLUDE FOR MOTION: 5, 11, 18 (jeez)
                        # any other missing numbers have just not been fmriprepped yet
-                       subject = c(1:4, 6:10, 12:15, 17, 19:20),
+                       subject = c(1:4, 6:10, 12:15, 17, 19:21),
                        run = 1:5) %>% 
   filter(!(task == "naturalistic" & run > 3)) %>% 
   mutate(task = paste("task", task, sep = "-"),
@@ -814,26 +857,29 @@ targets_fmri <- list(
         out_path <- here::here("ignore", "outputs", out_filename)
         
         make_encoding_timecourse(onsets = input_name,
-                                 path_stim_activations = activations.flynet_naturalistic,
+                                 path_stim_activations = stim_activation_name,
                                  run_duration = n_trs_kept_naturalistic * tr_duration_mb8) %>% 
           write_csv(file = out_path,
                     # because they're going into evil MATLAB
                     col_names = FALSE)
         
         out_path
-        },
+      },
       format = "file"
     ),
     values = map_values %>% 
       # we only need the full single-trial events dataframes for naturalistic
       # to prepare to set the single-trial beta niftis as targets later
       filter(endsWith(task, "naturalistic")) %>% 
+      # this now generates for multiple encoding models!!
+      expand(nesting(task, subject, run), encoding_type = c("flynet", "alexnet")) %>% 
       mutate(across(everything(), \(x) str_replace(x, "-", ".")),
              input_name = paste("events", task, subject, run, sep = "_"),
-             target_name = paste("activations.flynet", task, subject, run, sep = "_"),
-             out_filename = paste(task, subject, run,"acts-flynet.csv", sep = "_"),
-             across(c(input_name, target_name), syms)) %>% 
-      select(input_name, target_name, out_filename)
+             stim_activation_name = sprintf("activations.%s_naturalistic", encoding_type),
+             target_name = sprintf("activations.%s_%s_%s_%s", encoding_type, task, subject, run),
+             out_filename = sprintf("%s_%s_%s_acts-%s.csv", task, subject, run, encoding_type),
+             across(c(input_name, stim_activation_name, target_name), syms)) %>% 
+      select(input_name, stim_activation_name, target_name, out_filename)
   )
 )
 
@@ -843,10 +889,10 @@ targets_fmri <- list(
 # for tar_eval to combine across some, but not all, targets
 # should be usable for combining across run but keeping task and subject
 # and then combining across subject but keeping task
-make_eval_values <- function (values, summarize_fmt, target_prefix) {
+make_eval_values <- function (values, summarize_fmt, target_prefix, prefix_sep = "_") {
   values %>% 
-    mutate(input_names = map2(suffix, combine_vals, \(x, y) syms(sprintf(glue::glue("%s_%s_{summarize_fmt}"), target_prefix, x, y))),
-           target_name = syms(paste(target_prefix, suffix, sep = "_"))) %>% 
+    mutate(input_names = map2(suffix, combine_vals, \(x, y) syms(sprintf(glue::glue("%s%s%s_{summarize_fmt}"), target_prefix, prefix_sep, x, y))),
+           target_name = syms(paste(target_prefix, suffix, sep = prefix_sep))) %>% 
     select(target_name, input_names)
 }
 
@@ -918,7 +964,9 @@ targets_fmri_level1 <- list(
     values = map_values_across.run %>% 
       filter(endsWith(task, "naturalistic")) %>% 
       distinct(suffix, task, subject, combine_vals) %>% 
-      make_eval_values(summarize_fmt = "run.%02d", target_prefix = "activations.flynet")
+      expand(nesting(suffix, task, subject, combine_vals), encoding_type = c("flynet", "alexnet")) %>% 
+      mutate(suffix = paste(encoding_type, suffix, sep = "_")) %>% 
+      make_eval_values(summarize_fmt = "run.%02d", target_prefix = "activations", prefix_sep = ".")
   ),
   tar_eval(
     tar_target(
@@ -1064,29 +1112,24 @@ targets_fmri_level2 <- list(
 ### canlabtools-based group analyses so help me god ----
 
 targets_fmri_canlabtools <- list(
+  # this eval factory is for aggregating stuff across all subs
   tar_eval(
     expr = tar_target(
-      activations.flynet_task.naturalistic_all.subs,
+      target_name,
       # lists cannot be format = "file"
       # yeah sorta goofy but whatevs
-      command = list(!!!combine_vals)
+      command = list(!!!input_names)
     ),
     values = map_values_across.task %>% 
       distinct(combine_vals) %>% 
-      unchop(combine_vals) %>% 
-      mutate(combine_vals = syms(paste0("activations.flynet_task.naturalistic_", combine_vals))) %>% 
-      chop(combine_vals)
-  ),
-  tar_eval(
-    expr = tar_target(
-      bold_smoothed.4mm_task.naturalistic_all.subs,
-      command = list(!!!combine_vals)
-    ),
-    values = map_values_across.task %>% 
-      distinct(combine_vals) %>% 
-      unchop(combine_vals) %>% 
-      mutate(combine_vals = syms(paste0("bold_smoothed.4mm_task.naturalistic_", combine_vals))) %>% 
-      chop(combine_vals)
+      expand(combine_vals, 
+             prefix = c("activations.flynet", 
+                        "activations.alexnet",
+                        "bold_smoothed.4mm", 
+                        "confounds_prespm")) %>% 
+      mutate(target_name = syms(paste(prefix, "task.naturalistic", "all.subs", sep = "_")), 
+             input_names = map2(prefix, combine_vals, \(x, y) syms(paste(x, "task.naturalistic", y, sep = "_")))) %>% 
+      select(target_name, input_names)
   ),
   tar_target(
     perf_encoding.flynet_task.naturalistic_region.sc,
@@ -1098,26 +1141,13 @@ targets_fmri_canlabtools <- list(
                                            # these three need to take vectors containing the values for each run
                                            bolds = bold_smoothed.4mm_task.naturalistic_all.subs,
                                            activations = activations.flynet_task.naturalistic_all.subs,
+                                           confounds = confounds_prespm_task.naturalistic_all.subs,
                                            script = matlab_fit_pls),
     format = "file"
   )
 )
 
-## targets: maps out by parcel ROI (for whole-brainy analyses) ----
-
-map_values_across.run_by.parcel <- map_values_across.run %>% 
-  expand(nesting(suffix, task, subject, model_type), 
-         roi = tar_read(betas.by.parcel_smoothed.4mm_boxcar_task.naturalistic_sub.0001) %>% 
-           basename() %>% 
-           str_sub(start = 7L, end = -5L)) %>% 
-  unite(col = "suffix", model_type, suffix, remove = FALSE)
-
-map_values_across.task_by.parcel <- map_values_across.run_by.parcel %>% 
-  select(task, subject, roi, model_type) %>% 
-  mutate(across(everything(), \(x) str_replace_all(x, "-", "."))) %>% 
-  chop(subject) %>% 
-  rename(combine_vals = subject) %>% 
-  unite(col = "suffix", model_type, task, roi, remove = FALSE)
+## targets: splitting by parcel ROI (for whole-brainy analyses) ----
 
 targets_wholebrain <- list(
   tar_eval(
@@ -1125,38 +1155,93 @@ targets_wholebrain <- list(
       name = target_name,
       command = {
         all_betas <- input_name
-        these_betas <- all_betas[grepl(roi, all_betas)]
         
-        these_betas %>%
-          read_csv() %>% 
-          # VarX and Row are the names that come in from matlab writetable()
-          pivot_longer(cols = starts_with("Var")) %>% 
-          pivot_wider(names_from = Row) %>% 
-          select(-name) %>%
-          cor() %>% 
-          as_tibble(rownames = "condition_row") %>% 
-          pivot_longer(cols = -condition_row,
-                       names_to = "condition_col",
-                       values_to = "correlation")
+        tibble(filename = all_betas) %>% 
+          mutate(betas = map(filename, read_csv)) %>% 
+          # in case one or more of the ROIs has 0 voxels? which happens apparently?
+          filter(map_int(betas, nrow) > 0) %>% 
+          mutate(roi = str_sub(basename(filename), start = 7L, end = -5L)) %>% 
+          select(-filename) %>% 
+          mutate(betas = map(betas, \(x) x %>% 
+                               # VarX and Row are the names that come in from matlab writetable()
+                               pivot_longer(cols = starts_with("Var")) %>% 
+                               pivot_wider(names_from = Row) %>% 
+                               select(-name) %>%
+                               cor() %>% 
+                               as_tibble(rownames = "condition_row") %>% 
+                               pivot_longer(cols = -condition_row,
+                                            names_to = "condition_col",
+                                            values_to = "correlation"), 
+                             .progress = "making RDMs")) %>% 
+          unnest(betas)
       }
     ),
-    values = map_values_across.run_by.parcel %>% 
+    values = map_values_across.run %>% 
       filter(task == "task-naturalistic") %>% 
-      mutate(input_name = syms(sprintf("betas.by.parcel_smoothed.4mm_%s", suffix)),
-             target_name = syms(sprintf("rdms_smoothed.4mm_%s_%s", suffix, roi))) %>% 
-      select(target_name, input_name, roi)
+      select(-combine_vals) %>% 
+      mutate(input_name = syms(paste("betas.by.parcel_smoothed.4mm", model_type, suffix, sep = "_")),
+             target_name = syms(paste("rdms_smoothed.4mm", model_type, suffix, sep = "_"))) %>% 
+      select(-suffix)
   ),
   tar_eval(
     tar_target(
       name = target_name,
-      command = bind_rows(!!!input_names,
-                          .id = "target_name")
+      command = {
+        list(!!!input_names) %>% 
+          set_names(combine_vals) %>% 
+          bind_rows(.id = "subj_num") %>% 
+          mutate(subj_num = as.integer(str_sub(subj_num, start = -4L))) %>% 
+          separate_wider_delim(cols = condition_row, 
+                               delim = "_", 
+                               names = c("animal1", "loom1", "video11", "video21")) %>% 
+          separate_wider_delim(cols = condition_col, 
+                               delim = "_", 
+                               names = c("animal2", "loom2", "video12", "video22")) %>% 
+          unite("video1", video11, video21) %>% 
+          unite("video2", video12, video22) %>% 
+          filter(video1 != video2) %>% 
+          mutate(video_sort = map2_chr(video1, video2, \(x, y) paste(sort(c(x, y)), collapse = " "))) %>% 
+          distinct(subj_num, roi, video_sort, .keep_all = TRUE) %>% 
+          select(-video_sort) %>% 
+          mutate(across(starts_with("loom"), \(x) as.integer(str_sub(x, start = -1L))),
+                 same_animal = as.integer(animal1 == animal2), 
+                 same_loom = as.integer(loom1 == loom2),
+                 # per Gower 1966, Gower & Legendre 1996, Solo 2019
+                 # Pearson "distance" in this way has a range of 2 if negative correlations are considered far
+                 # sqrt(1 - r) is metric, in that it satisfies the triangle inequality for any 3 observations
+                 distance = sqrt(1 - correlation))
+      }
     ),
-    values = map_values_across.task_by.parcel %>% 
-      filter(task == "task-naturalistic") %>% 
-      mutate(input_names = pmap(list(model_type, task, roi, combine_vals), \(a, b, c, d) syms(sprintf("rdms_smoothed.4mm_%s_%s_%s_%s", a, b, d, c))),
-             target_name = syms(sprintf("rdms_smoothed.4mm_%s", suffix))) %>% 
-      select(target_name, input_names)
+    values = map_values_across.task %>% 
+      filter(endsWith(suffix, "naturalistic")) %>% 
+      distinct(suffix, model_type, combine_vals) %>% 
+      mutate(input_names = pmap(list(model_type, suffix, combine_vals), \(a, b, c) syms(paste("rdms_smoothed.4mm", a, b, c, sep = "_"))),
+             target_name = syms(paste("rdms_smoothed.4mm", model_type, suffix, sep = "_"))) %>% 
+      select(target_name, input_names, combine_vals)
+  ),
+  tar_target(
+    rdm_preplot_endspike_subcort_naturalistic,
+    command = {
+      rdms_smoothed.4mm_endspike_task.naturalistic %>% 
+        filter(roi %in% c("Bstem_SC", "Amygdala")) %>% 
+        mutate(across(starts_with("video"), \(x) paste0(x, ".mp4"))) %>% 
+        left_join(rdms_beh_naturalistic, by = c("subj_num", "video1", "video2")) %>% 
+        # the sorting wasn't the same I guess??
+        left_join(rdms_beh_naturalistic, by = c("subj_num", "video1" = "video2", "video2" = "video1")) %>% 
+        mutate(diff_pleasantness = coalesce(diff_pleasantness.x, diff_pleasantness.y), 
+               diff_arousal = coalesce(diff_arousal.x, diff_arousal.y), 
+               diff_fear = coalesce(diff_fear.x, diff_fear.y),
+               # so the betas are in units of one slider step
+               across(starts_with("diff"), \(x) x / 10)) %>% 
+        select(-ends_with(".x"), -ends_with(".y")) %>% 
+        group_by(roi, video1, animal1, loom1, video2, animal2, loom2) %>% 
+        summarize(correlation = mean(correlation), 
+                  distance = mean(distance), 
+                  same_animal = mean(same_animal),
+                  same_loom = mean(same_loom),
+                  .groups = "drop") %>% 
+        mutate(intxn = same_animal * same_loom)
+    }
   )
 )
 
@@ -1227,7 +1312,34 @@ targets_beh <- list(
       bind_rows() %>% 
       select(subj_num = participant, video_id, has_loom, animal_type, ends_with("rating")) %>% 
       mutate(subj_num = as.integer(subj_num)) %>% 
-      filter(!is.na(video_id))
+      filter(!is.na(video_id), 
+             # Only subjects with kept fMRI data
+             subj_num %in% as.integer(str_sub(unique(map_values$subject), start = -4L)))
+  ),
+  tar_target(
+    name = rdms_beh_naturalistic,
+    command = beh_naturalistic %>% 
+      select(-has_loom, -animal_type) %>% 
+      nest(ratings = -subj_num) %>% 
+      mutate(ratings = map(ratings, 
+                           \(x) expand(x, 
+                                       nesting(video1 = video_id, 
+                                               pleasantness1 = pleasantness_rating, 
+                                               arousal1 = arousal_rating, 
+                                               fear1 = fear_rating), 
+                                       nesting(video2 = video_id, 
+                                               pleasantness2 = pleasantness_rating, 
+                                               arousal2 = arousal_rating, 
+                                               fear2 = fear_rating)))) %>% 
+      unnest(ratings) %>% 
+      filter(video1 != video2) %>% 
+      mutate(video_sort = map2_chr(video1, video2, \(x, y) paste(sort(c(x, y)), collapse = " "))) %>% 
+      distinct(subj_num, video_sort, .keep_all = TRUE) %>% 
+      select(-video_sort) %>% 
+      mutate(diff_pleasantness = abs(pleasantness1 - pleasantness2),
+             diff_arousal = abs(arousal1 - arousal2),
+             diff_fear = abs(fear1 - fear2)) %>% 
+      select(subj_num, video1, video2, starts_with("diff"))
   ),
   # from 3 colleagues I was able to shake down for ratings in March 2024, lol
   tar_target(
@@ -1294,6 +1406,150 @@ targets_beh <- list(
   )
 )
 
+## targets: plots for showing ----
+targets_plots <- list(
+  tar_target(
+    plot_ratings_naturalistic,
+    command = {
+      preplot <- beh_naturalistic %>% 
+        mutate(has_loom = if_else(has_loom == 1, "Looming", "No looming"),
+               animal_type = fct_relevel(animal_type, "food", "dog", "cat")) %>% 
+        pivot_longer(cols = ends_with("rating"), names_to = "construct", values_to = "rating") %>% 
+        mutate(construct = str_remove(construct, "_rating"),
+               construct = if_else(construct == "pleasantness", "valence (- to +)", construct),
+               construct = fct_relevel(construct, "valence (- to +)")) %>% 
+        filter(animal_type != "food")
+      
+      preplot %>% 
+        ggplot(aes(x = animal_type, y = rating, color = factor(has_loom))) +
+        geom_jitter(alpha = 0.1) +
+        geom_pointrange(data = preplot %>% 
+                          # so that the SE will be calculated by subject and not by trial
+                          group_by(subj_num, animal_type, has_loom, construct) %>% 
+                          summarize(rating = mean(rating), .groups = "drop"),
+                        stat = "summary", 
+                        fun.data = "mean_se") +
+        labs(x = "Object type",
+             y = "Self-report rating",
+             color = NULL) +
+        facet_wrap(~ construct) +
+        theme_bw(base_size = 16) +
+        theme(plot.background = element_blank(),
+              legend.background = element_blank())
+      }
+  ),
+  tar_target(
+    plot_rdm_subcort_naturalistic,
+    command = {
+      preplot <- rdm_preplot_endspike_subcort_naturalistic %>% 
+        # stupid shit to re-complete both triangle halves of the square
+        bind_rows(rdm_preplot_endspike_subcort_naturalistic %>% 
+                    rename(video3 = video1, animal3 = animal1, loom3 = loom1) %>% 
+                    rename(video1 = video2, animal1 = animal2, loom1 = loom2) %>% 
+                    rename(video2 = video3, animal2 = animal3, loom2 = loom3))
+      
+      square_bounds_base <- stims_naturalistic %>% 
+        # FOR SANS 2025 ABSTRACT WE AREN'T REPORTING FOOD
+        filter(animal_type != "food") %>% 
+        mutate(animal_type = fct_relevel(animal_type, "dog", "cat", "frog")) %>% 
+        arrange(animal_type, has_loom)
+      
+      square_bounds_intxn <- square_bounds_base %>% 
+        count(animal_type, has_loom) %>% 
+        mutate(xmax = cumsum(n) + 0.5, 
+               xmin = coalesce(lag(xmax), 0.5),
+               label = if_else(has_loom == 0,
+                               paste("non-looming", animal_type),
+                               paste("looming", animal_type)))
+    
+      preplot %>% 
+        mutate(across(starts_with("animal"), \(x) as.integer(factor(x, levels = c("dog", "cat", "frog", "spider", "food")))),
+               roi = case_match(roi,
+                                "Amygdala" ~ "amygdala",
+                                "Bstem_SC" ~ "superior colliculus")) %>% 
+        unite(col = "intxn1", animal1, loom1, remove = FALSE) %>% 
+        unite(col = "intxn2", animal2, loom2, remove = FALSE) %>% 
+        # FOR SANS 2025 ABSTRACT WE AREN'T REPORTING FOOD
+        filter(animal1 != 5, animal2 != 5) %>% 
+        # set the aesthetics in each layer bc the data don't all have the same cols
+        ggplot() + 
+        geom_raster(aes(x = fct_reorder(video1, intxn1, .fun = \(x) sort(unique(x))), 
+                        y = fct_reorder(video2, intxn2, .fun = \(x) sort(unique(x))),
+                        fill = distance)) + 
+        geom_rect(aes(xmin = xmin,
+                      xmax = xmax,
+                      ymin = xmin,
+                      ymax = xmax),
+                  data = square_bounds_intxn,
+                  color = "white",
+                  alpha = 0) +
+        geom_label(aes(x = xmin, y = xmax, label = label),
+                  data = square_bounds_intxn,
+                  hjust = 0, vjust = 1,
+                  size = 3) +
+        facet_wrap(~roi) + 
+        scale_fill_viridis_c() + 
+        labs(x = NULL, y = NULL) +
+        theme_bw(base_size = 16) +
+        theme(plot.background = element_blank(),
+              legend.background = element_blank(),
+              aspect.ratio = 1,
+              axis.text = element_blank(),
+              axis.ticks = element_blank())
+    }
+  ),
+  tar_target(
+    plot_spaghetti.intxn_naturalistic,
+    command = rdms_smoothed.4mm_endspike_task.naturalistic %>% 
+      filter(roi %in% c("Bstem_SC", "Amygdala")) %>% 
+      mutate(intxn = if_else(same_animal * same_loom == 1, 
+                             "Same object & loom\n(integration)", 
+                             "All other pairs"), 
+             roi = case_match(roi,
+                              "Amygdala" ~ "amygdala",
+                              "Bstem_SC" ~ "superior colliculus")) %>% 
+      group_by(roi, subj_num, intxn) %>% 
+      summarize(distance = mean(distance), .groups = "drop") %>% 
+      ggplot(aes(x = intxn, y = distance)) + 
+      geom_line(aes(group = subj_num)) + 
+      geom_point() + 
+      guides(x = guide_axis(angle = 20)) + 
+      facet_wrap(~roi) + 
+      labs(x = "Pair type", y = "fMRI pattern distance") + 
+      theme_bw(base_size = 16) + 
+      theme(plot.background = element_blank())
+  )
+)
+
+targets_figs <- list(
+  tar_target(
+    fig_ratings_naturalistic,
+    command = ggsave(here::here("ignore", "figs", "ratings_naturalistic.png"),
+                     plot = plot_ratings_naturalistic,
+                     width = 3000,
+                     height = 1200,
+                     units = "px")
+  ),
+  tar_target(
+    fig_rdm_subcort_naturalistic,
+    command = ggsave(here::here("ignore", "figs", "rdm_subcort_naturalistic.png"),
+                     plot = plot_rdm_subcort_naturalistic,
+                     width = 3000,
+                     height = 1600,
+                     units = "px")
+  ),
+  tar_target(
+    fig_spaghetti.intxn_naturalistic,
+    command = ggsave(here::here("ignore", "figs", "spaghetti.intxn_naturalistic.png"),
+                     plot = plot_spaghetti.intxn_naturalistic,
+                     width = 1600,
+                     height = 1600,
+                     units = "px")
+  )
+)
+
+## final combo call ----
+
 list(
   targets_scripts,
   targets_stimuli,
@@ -1305,5 +1561,7 @@ list(
   targets_fmri_level2,
   targets_wholebrain,
   targets_fmri_canlabtools,
-  targets_beh
+  targets_beh,
+  targets_plots,
+  targets_figs
 )
