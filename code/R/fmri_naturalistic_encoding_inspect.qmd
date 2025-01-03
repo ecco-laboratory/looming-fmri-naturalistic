@@ -1,18 +1,18 @@
 ---
 title: "naturalistic looming fMRI encoding to self report"
-format: html
+format: 
+  html:
+    embed-resources: true
 ---
 
 ```{r}
 require(tidyverse)
+require(magrittr)
 require(rlang)
 
 target_store <- here::here("ignore", "_targets")
 
 stims <- targets::tar_read(stims_naturalistic, store = target_store)
-
-beh <- targets::tar_read(beh_naturalistic, store = target_store) %>% 
-  filter(!(subj_num %in% c(5, 11)))
 
 activations.flynet <- targets::tar_read(activations.flynet_naturalistic, store = target_store) %>% 
   read_csv() %>% 
@@ -20,14 +20,312 @@ activations.flynet <- targets::tar_read(activations.flynet_naturalistic, store =
   nest(activations = -video)
 
 hitprobs.flynet <- targets::tar_read(hitprobs.flynet_naturalistic, store = target_store) %>% 
-  read_csv()
+  read_csv() %>% 
+  nest(probs = -video) %>% 
+  mutate(slope = map_dbl(probs, \(x) lm(hit_prob ~ scale(frame), 
+                                        data = x) %>% 
+                           pluck("coefficients", 2)))
 
-# TEMPORARY, EVENTUALLY REPLACE THIS WITH THE TARGETS CALL
-# one subject's target contains many paths, one per ROI
-x <- read_csv("/home/data/eccolab/SPLaT_fMRI/ignore/models/task-naturalistic/acq-mb8/sub-0001/model-boxcar/smoothed-4mm/betas_by_parcel/betas_Ctx_VVC_L.csv") %>% 
-  rename_with(\(x) str_replace(x, "Var", "voxel_"), everything()) %>% 
-  separate_wider_delim(cols = Row, delim = "_", names = c("animal_type", "has_loom", "video1", "video2")) %>% 
-  unite(col = "video", video1, video2) %>% 
-  mutate(has_loom = as.integer(str_sub(has_loom, start = -1L)),
-         video = paste0(video, ".mp4"))
+beh <- targets::tar_read(beh_naturalistic, store = target_store)
+
+rdms_endspike <- targets::tar_read(rdms_smoothed.4mm_endspike_task.naturalistic, store = target_store)
+
+# rdms_boxcar <- targets::tar_read(rdms_smoothed.4mm_boxcar_task.naturalistic, store = target_store)
+
+rdms_beh <- targets::tar_read(rdms_beh_naturalistic, store = target_store)
+```
+
+```{r}
+beh %>% 
+  left_join(hitprobs.flynet %>% 
+              select(-probs), 
+            by = c("video_id" = "video")) %>% 
+  distinct(video_id, has_loom, slope, animal_type) %>% 
+  ggplot(aes(x = has_loom, y = slope, color = animal_type)) + 
+  geom_jitter(width = 0.1, alpha = 0.5) + 
+  geom_smooth(aes(fill = animal_type), method = "lm", alpha = 0.2) + 
+  geom_smooth(aes(group = 1), method = "lm") +
+  labs(x = "Human-labeled looming",
+       y = "FlyNet linear slope of P(hit) across video")
+```
+
+```{r}
+beh %>% 
+  left_join(hitprobs.flynet %>% 
+              select(-probs), 
+            by = c("video_id" = "video")) %>% 
+  ggplot(aes(x = slope, y = pleasantness_rating, color = animal_type)) + 
+  geom_point(alpha = 0.5) + 
+  geom_smooth(aes(fill = animal_type), method = "lm", alpha = 0.2) + 
+  geom_smooth(aes(group = 1), method = "lm") +
+  labs(x = "FlyNet linear slope of P(hit) across video",
+       y = "Valence rating")
+```
+
+```{r}
+beh %>% 
+  left_join(hitprobs.flynet %>% 
+              select(-probs), 
+            by = c("video_id" = "video")) %>% 
+  ggplot(aes(x = slope, y = arousal_rating, color = animal_type)) + 
+  geom_point(alpha = 0.5) + 
+  geom_smooth(aes(fill = animal_type), method = "lm", alpha = 0.2) + 
+  geom_smooth(aes(group = 1), method = "lm") +
+  labs(x = "FlyNet linear slope of P(hit) across video",
+       y = "Arousal rating")
+```
+
+```{r}
+beh %>% 
+  left_join(hitprobs.flynet %>% 
+              select(-probs), 
+            by = c("video_id" = "video")) %>% 
+  ggplot(aes(x = slope, y = fear_rating, color = animal_type)) + 
+  geom_point(alpha = 0.5) + 
+  geom_smooth(aes(fill = animal_type), method = "lm", alpha = 0.2) + 
+  geom_smooth(aes(group = 1), method = "lm") +
+  labs(x = "FlyNet linear slope of P(hit) across video",
+       y = "Fear rating")
+```
+
+## BRAIN RDMs
+
+```{r}
+rdms_endspike_subcort <- rdms_endspike %>% 
+    filter(roi %in% c("Bstem_SC", "Amygdala")) %>% 
+  mutate(across(starts_with("video"), \(x) paste0(x, ".mp4"))) %>% 
+  left_join(rdms_beh, by = c("subj_num", "video1", "video2")) %>% 
+  # the sorting wasn't the same I guess??
+  left_join(rdms_beh, by = c("subj_num", "video1" = "video2", "video2" = "video1")) %>% 
+  mutate(diff_pleasantness = coalesce(diff_pleasantness.x, diff_pleasantness.y), 
+         diff_arousal = coalesce(diff_arousal.x, diff_arousal.y), 
+         diff_fear = coalesce(diff_fear.x, diff_fear.y),
+         # so the betas are in units of one slider step
+         across(starts_with("diff"), \(x) x / 10)) %>% 
+  select(-ends_with(".x"), -ends_with(".y"))
+```
+
+### brain rdm plot
+
+```{r}
+rdms_endspike_subcort_preplot <- rdms_endspike_subcort %>% 
+  group_by(roi, video1, animal1, loom1, video2, animal2, loom2) %>% 
+  summarize(correlation = mean(correlation), 
+            distance = mean(distance), 
+            same_animal = mean(same_animal),
+            same_loom = mean(same_loom),
+            .groups = "drop") %>% 
+  mutate(intxn = same_animal * same_loom)
+
+rdms_endspike_subcort_preplot %<>% 
+    # stupid shit to re-complete both triangle halves of the square
+  bind_rows(rdms_endspike_subcort_preplot %>% 
+              rename(video3 = video1, animal3 = animal1, loom3 = loom1) %>% 
+              rename(video1 = video2, animal1 = animal2, loom1 = loom2) %>% 
+              rename(video2 = video3, animal2 = animal3, loom2 = loom3))
+
+square_bounds <- stims %>% 
+  filter(animal_type != "food") %>% 
+  mutate(animal_type = fct_relevel(animal_type, "dog", "cat", "frog")) %>% 
+  arrange(animal_type, has_loom) %>% 
+  count(animal_type, has_loom) %>% 
+  mutate(xmax = cumsum(n) + 0.5, xmin = coalesce(lag(xmax), 0.5))
+
+rdms_endspike_subcort_preplot %>% 
+  mutate(across(starts_with("animal"), \(x) as.integer(factor(x, levels = c("dog", "cat", "frog", "spider", "food")))),
+         roi = case_match(roi,
+                          "Amygdala" ~ "amygdala",
+                          "Bstem_SC" ~ "superior colliculus")) %>% 
+  unite(col = "intxn1", animal1, loom1, remove = FALSE) %>% 
+  unite(col = "intxn2", animal2, loom2, remove = FALSE) %>% 
+  filter(animal1 != 5, animal2 != 5) %>% 
+  ggplot(aes(x = fct_reorder(video1, intxn1, .fun = \(x) sort(unique(x))), 
+             y = fct_reorder(video2, intxn2, .fun = \(x) sort(unique(x))), 
+             fill = distance)) + 
+  geom_raster() + 
+  annotate(geom = "rect",
+           xmin = square_bounds$xmin, xmax = square_bounds$xmax, ymin = square_bounds$xmin, ymax = square_bounds$xmax,
+           color = "black",
+           # linewidth = 1,
+           alpha = 0) +
+  facet_wrap(~roi) + 
+  scale_fill_viridis_c() + 
+  labs(x = NULL, y = NULL) +
+  theme(aspect.ratio = 1,
+        axis.text = element_blank(),
+        axis.ticks = element_blank())
+```
+
+
+```{r}
+rdms_endspike_subcort_preplot %>% 
+  mutate(across(starts_with("animal"), \(x) as.integer(factor(x, levels = c("dog", "cat", "frog", "spider", "food"))))) %>% 
+  unite(col = "intxn1", animal1, loom1) %>% 
+  unite(col = "intxn2", animal2, loom2) %>% 
+  ggplot(aes(x = fct_rev(fct_reorder(video1, intxn1, .fun = \(x) sort(unique(x)))), 
+             y = fct_reorder(video2, intxn2, .fun = \(x) sort(unique(x))), 
+             fill = intxn)) + 
+  geom_raster() + 
+  facet_wrap(~roi) + 
+  scale_fill_viridis_c() + 
+  theme(aspect.ratio = 1)
+```
+
+### dum dum naive non orthogonalized correlations
+
+```{r}
+cor.naive_rdms_endspike_subcort <- rdms_endspike_subcort %>% 
+  mutate(intxn = same_animal * same_loom) %>% 
+  nest(data = -c(roi, subj_num)) %>% 
+  mutate(cor_pleasantness = map(data, \(x) broom::tidy(cor.test(x$distance, x$diff_pleasantness))),
+         cor_arousal = map(data, \(x) broom::tidy(cor.test(x$distance, x$diff_arousal))),
+         cor_fear = map(data, \(x) broom::tidy(cor.test(x$distance, x$diff_fear))),
+         cor_loom = map(data, \(x) broom::tidy(cor.test(x$distance, x$same_loom))),
+         cor_animal = map(data, \(x) broom::tidy(cor.test(x$distance, x$same_animal))),
+         cor_intxn = map(data, \(x) broom::tidy(cor.test(x$distance, x$intxn)))) %>% 
+  pivot_longer(cols = starts_with("cor"), names_to = "term", values_to = "statistics", names_prefix = "cor_") %>% 
+  select(-data) %>% 
+  unnest(statistics)
+
+cor.naive_rdms_endspike_subcort %>% 
+  group_by(roi, term) %>% 
+  summarize(cor_mean = mean(estimate, na.rm = TRUE), cor_sd = sd(estimate, na.rm = TRUE), n = sum(!is.na(estimate))) %>% 
+  mutate(cor_se = cor_sd / sqrt(n),
+         across(starts_with("cor"), \(x) signif(x, digits = 3)))
+```
+
+because a dummy contrast of 0-1 is also t-testable... silly goose
+
+```{r}
+rdms_endspike_subcort %>% 
+  mutate(intxn = same_animal * same_loom) %>% 
+  group_by(roi, subj_num, intxn) %>% 
+  summarize(distance = mean(distance), .groups = "drop") %>% 
+  pivot_wider(names_from = intxn, values_from = distance) %>% 
+  mutate(difference = `1` - `0`) %>% 
+  group_by(roi) %>% 
+  summarize(m1 = mean(`1`), m0 = mean(`0`), se1 = sd(`1`)/sqrt(n()), se0 = sd(`0`)/sqrt(n())) %>% 
+  mutate(cohens.d = (m1 - m0) / sqrt((se1^2 + se0^2)/2))
+```
+
+```{r}
+rdms_endspike_subcort %>% 
+  mutate(intxn = if_else(same_animal * same_loom == 1, 
+                         "Same object & loom\n(integration)", 
+                         "All other pairs"), 
+         roi = case_match(roi,
+                          "Amygdala" ~ "amygdala",
+                          "Bstem_SC" ~ "superior colliculus")) %>% 
+  group_by(roi, subj_num, intxn) %>% 
+  summarize(distance = mean(distance), .groups = "drop") %>% 
+  ggplot(aes(x = intxn, y = distance)) + 
+  geom_line(aes(group = subj_num)) + 
+  geom_point() + 
+  guides(x = guide_axis(angle = 20)) + 
+  facet_wrap(~roi) + 
+  labs(x = "Pair type", y = "fMRI pattern dissimilarity") + 
+  theme_bw(base_size = 16) + 
+  theme(plot.background = element_blank())
+```
+
+
+```{r}
+cor.naive_rdms_endspike_subcort %>% 
+  mutate(roi = case_match(roi,
+                                "Amygdala" ~ "amygdala",
+                                "Bstem_SC" ~ "superior colliculus"),
+         term = fct_recode(term, 
+                           "valence" = "pleasantness",
+                           "animal x loom" = "intxn"),
+         term = fct_relevel(term, "valence", "arousal", "fear", "animal", "loom")) %>% 
+  filter() %>% 
+  ggplot(aes(x = estimate, y = fct_rev(term))) +
+  geom_vline(xintercept = 0, linetype = "dotted") +
+  geom_jitter(height = 0.1, alpha = 0.2) +
+  geom_pointrange(stat = "summary", fun.data = "mean_se") +
+  facet_grid(roi ~ .) +
+  labs(x = sprintf("single-subject Pearson's r (with mean \u00B1 1 SE)"),
+       y = "predictor of BOLD pattern distance") +
+  theme_bw(base_size = 16)
+```
+
+```{r}
+cor.avg_rdms_endspike_subcort <- rdms_endspike_subcort %>% 
+  mutate(intxn = same_animal * same_loom) %>% 
+  rsample::group_bootstraps(group = subj_num, times = 1000, apparent = TRUE) %>% 
+  mutate(statistics = map(splits, \(x) x %>% 
+                            rsample::analysis() %>% 
+                            group_by(roi, video1, animal1, loom1, video2, animal2, loom2) %>%
+                            summarize(across(c(distance, starts_with("diff"), starts_with("same"), intxn), mean),
+                                      .groups = "drop") %>% 
+                            group_by(roi) %>% 
+                            summarize(cor_pleasantness = cor(distance, diff_pleasantness),
+                                      cor_arousal = cor(distance, diff_arousal),
+                                      cor_fear = cor(distance, diff_fear),
+                                      cor_loom = cor(distance, same_loom),
+                                      cor_animal = cor(distance, same_animal),
+                                      cor_intxn = cor(distance, intxn)) %>% 
+                            pivot_longer(cols = starts_with("cor"), 
+                                         names_to = "term", 
+                                         values_to = "estimate", 
+                                         names_prefix = "cor_"),
+                          .progress = "bootstrapping"))
+
+cor.avg_rdms_endspike_subcort %>% 
+  # must combine everything into the 'term' column for int_pctl() to work
+  mutate(statistics = map(statistics, \(x) unite(x, col = "term", roi, term, sep = "."))) %>% 
+  rsample::int_pctl(statistics = statistics) %>% 
+  separate_wider_delim(cols = term, delim = ".", names = c("roi", "term"))
+```
+
+
+### lmers
+
+```{r}
+rdms_endspike_subcort %>% 
+    filter(roi == "Bstem_SC") %>% 
+  lmerTest::lmer(distance ~ diff_pleasantness + same_loom * same_animal + (1 | subj_num), data = .) %>% 
+  summary()
+```
+
+```{r}
+rdms_endspike_subcort %>% 
+    filter(roi == "Bstem_SC") %>% 
+  lme4::lmer(distance ~ diff_arousal + same_loom * same_animal + (1 | subj_num), data = .) %>% 
+  summary()
+```
+
+```{r}
+rdms_endspike_subcort %>% 
+    filter(roi == "Bstem_SC") %>% 
+  lmerTest::lmer(distance ~ diff_fear + same_loom * same_animal + (1 | subj_num), data = .) %>% 
+  summary()
+```
+
+
+```{r}
+rdms_endspike_subcort %>% 
+  filter(roi == "Amygdala") %>% 
+  lme4::lmer(distance ~ diff_pleasantness + same_loom * same_animal + (1 | subj_num), data = .) %>% 
+  summary()
+```
+
+```{r}
+rdms_endspike_subcort %>% 
+    filter(roi == "Amygdala") %>% 
+  lmerTest::lmer(distance ~ diff_arousal + same_loom * same_animal + (1 | subj_num), data = .) %>% 
+  broom.mixed::tidy()
+```
+
+```{r}
+rdms_endspike_subcort %>% 
+    filter(roi == "Amygdala") %>% 
+  lme4::lmer(distance ~ diff_fear + same_loom * same_animal + (1 | subj_num), data = .) %>% 
+  summary()
+```
+
+```{r}
+rdms_endspike_subcort %>% 
+  lme4::lmer(distance ~ fct_rev(roi) * same_loom * same_animal + (1 | subj_num), data = .) %>% 
+  summary()
 ```

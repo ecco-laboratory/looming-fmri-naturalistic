@@ -15,10 +15,14 @@ addpath(genpath('/home/data/eccolab/Code/GitHub/Neuroimaging_Pattern_Masks'));
 % tr_duration: in seconds, for spm_hrf()
 % paths_activations: derived from target. 
 % nested cell array to csvs of 2D matrices already interpolated into TR frequency
+% paths_confounds: derived from target. 
+% nested cell array to txts of SPM-compatible 2D matrices of confound regressors of interest
+% already had the initial volumes of each removed
 % region: in canlabcore atlas syntax
 % out_path: for the performance on held out subjects
 
 n_subjs = length(paths_nifti);
+n_runs = length(paths_nifti{1});
 
 %% LOAD/CONCATENATE/HRF-CONVOLVE ENCODING MODEL TIMECOURSES
 
@@ -50,52 +54,51 @@ subj_indices = [];
 bold_masked_allsubjs = [];
 mask = select_atlas_subset(load_atlas('canlab2018'), {region});
 
-% flag timepoints to exclude in a binary variable
+% flag timepoints to exclude by logical indexing
 exclude = true(max(trs_to_use),1); 
-exclude(trs_to_use)=false; 
-exclude = repmat(exclude,3,1);
+exclude(trs_to_use) = false; 
+% this should handle discarding the first several volumes for each run independently
+exclude = repmat(exclude, n_runs, 1);
 
 for i=1:n_subjs
-    
-    % append the volume indices for the non-discarded volumes here
-    % using the same logic as in specify_estimate_level1
-    % paths_nifti_formatted = {};
-    % for j=1:length(paths_nifti{i})
-    %     paths_nifti_formatted = [
-    %         paths_nifti_formatted;
-    %         cellstr(append(paths_nifti{i}{j}, ',', string(trs_to_use)))'
-    %     ];
-    %     % create the constant idx of subj number here so that it lines up with TR counts
-    %     % be mindful that these are subj idx, not the actual subj id for the filenames
-    %     subj_indices = [subj_indices; repmat(i, length(trs_to_use), 1)];
-    % end
-
-
-
     % now read in just this subject's whole brain data, but stacked across runs
     % NB: 3 runs of the naturalistic task takes up nearly 3 GB of memory per subject to read in
     % which is why this is looped, to keep the total memory ceiling down 
     % by keeping/concatenating only the data from the (smaller) ROI of interest
-    % NB2: fmri_data DOES accept 4D paths in SPM syntax, i.e. 'timeseries.nii,1'
-    % it will throw a 'Cannot find file:' warning but DO NOT FEAR!!!
-    % bold = fmri_data(paths_nifti_formatted);
     
     bold = fmri_data([paths_nifti{i}(:)]);
     bold.dat(:,exclude) = [];
-
-    % 2024-12-18 Leaving the call here in case you want to filter later BUT don't do it right now
-    % Especially don't band pass using the flynet1 studyforrest retinotopy parameters lol.
-    % don't filter out the task signal!!!
-    % bold = canlab_connectivity_preproc(bold, 'bpf', [.667/32 2/32],2);
+    % create the constant idx of subj number here so that it lines up with TR counts
+    % be mindful that these are subj idx, not the actual subj id for the filenames
+    subj_indices = [subj_indices; repmat(i, width(bold.dat), 1)];
     
     % masky mask
     bold_masked = apply_mask(bold, mask);
-    % only now, after masking, do we append to the everybody data
+
+    % light preprocessing
+
+    % first, use canlabtools method to ID volumes with a big sequential jump in RMSSD
+    % the method generates a movie for interactive viewing by default. hence turning it off in the args
+    [rmssd, rmssd_outlier_regressor_matrix] = rmssd_movie(bold_masked,'showmovie',false,'nodisplay');
+    
+    % then read in and row-run-stack fmriprep motion regressors
+    confounds = []; session_means =[];
+    for j=1:n_runs
+        confounds = [confounds; readmatrix(paths_confounds{i}{j})];
+        session_means = [session_means; j*ones(height(readmatrix(paths_confounds{i}{j})),1)];
+    end
+
+    % append RMSSD regressors to fmriprep motion regressors, attach to the fmri_data obj, regress
+    % 2024-12-18: note that we aren't doing any X-pass filtering
+    bold_masked.covariates =[confounds, rmssd_outlier_regressor_matrix, condf2indic(session_means)];
+    [preprocessed_dat] = canlab_connectivity_preproc(bold_masked,'bpf', [.008 1/8],tr_duration, 'no_plots');
+
+    % only now, after masking and preprocessing, do we append to the everybody data
     % as usual, transpose to get time on the rows and voxel on the columns
     % currently not preallocating this (yeah I know sorry) bc looping over subjects isn't that bad
-    bold_masked_allsubjs = [bold_masked_allsubjs; bold_masked.dat'];
+    bold_masked_allsubjs = [bold_masked_allsubjs; preprocessed_dat.dat'];
 end
-clear bold bold_masked
+clear bold bold_masked preprocessed_dat
 
 % TODO: decide whether this one is single subject or looping over subjects
 % MT is leaning toward doing this one single subject and having a loop called elsewhere

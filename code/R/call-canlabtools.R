@@ -5,6 +5,7 @@ canlabtools_fit_encoding_pls <- function (out_path,
                                           trs_to_use,
                                           bolds,
                                           activations, 
+                                          confounds,
                                           roi = "Bstem_SC",
                                           script = matlab_fit_pls) {
   
@@ -18,6 +19,7 @@ canlabtools_fit_encoding_pls <- function (out_path,
     # so these expect lists with one list-field per subject containing vectors for runs
     rvec_to_matlabcell(bolds, matname = "paths_nifti"),
     rvec_to_matlabcell(activations, matname = "paths_activations"),
+    rvec_to_matlabcell(confounds, matname = "paths_confounds"),
     assign_variable("region", roi),
     # TODO: Add confounds back in when the script takes them for lightweight canlabtools preproc
     call_script(script)
