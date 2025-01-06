@@ -2,7 +2,7 @@
 addpath('/home/data/eccolab/Code/GitHub/spm12'); % per spm docs, do not genpath it
 addpath(genpath('/home/data/eccolab/Code/GitHub/CanlabCore'));
 addpath(genpath('/home/data/eccolab/Code/GitHub/Neuroimaging_Pattern_Masks'));
-
+addpath '/home/data/shared/BrainstemNavigator/0.9/2a.BrainstemNucleiAtlas_MNI/labels_thresholded_binary_0.35'
 %% VARIABLES THAT MUST BE DEFINED BEFORE THE SCRIPT IS SOURCED
 % THIS SCRIPT IS DESIGNED TO RUN ACROSS MULTIPLE SUBJECTS!!!
 % with multiple runs per subject
@@ -52,7 +52,17 @@ clear activations_this_run conv_activations
 % MATCHED ORDER BECAUSE PAST THIS POINT YOU ARE JUST ASSUMING THESE INDICES LINE UP
 subj_indices = [];
 bold_masked_allsubjs = [];
+bold_allsubjs = [];
 mask = select_atlas_subset(load_atlas('canlab2018'), {region});
+
+if strcmp(region,'BStem_SC')
+    mask = fmri_data(which('SC_l.nii'));
+    mask_r = fmri_data(which('SC_r.nii'));
+    mask.dat = mask.dat+mask_r.dat;
+    pag = load_atlas('Kragel2019PAG');
+    pag = resample_space(pag,mask);
+    mask.dat(pag.dat>0)=0;
+end
 
 % flag timepoints to exclude by logical indexing
 exclude = true(max(trs_to_use),1); 
@@ -72,14 +82,12 @@ for i=1:n_subjs
     % be mindful that these are subj idx, not the actual subj id for the filenames
     subj_indices = [subj_indices; repmat(i, width(bold.dat), 1)];
     
-    % masky mask
-    bold_masked = apply_mask(bold, mask);
-
+    
     % light preprocessing
 
     % first, use canlabtools method to ID volumes with a big sequential jump in RMSSD
     % the method generates a movie for interactive viewing by default. hence turning it off in the args
-    [rmssd, rmssd_outlier_regressor_matrix] = rmssd_movie(bold_masked,'showmovie',false,'nodisplay');
+    [rmssd, rmssd_outlier_regressor_matrix] = rmssd_movie(bold,'showmovie',false,'nodisplay');
     
     % then read in and row-run-stack fmriprep motion regressors
     confounds = []; session_means =[];
@@ -90,13 +98,21 @@ for i=1:n_subjs
 
     % append RMSSD regressors to fmriprep motion regressors, attach to the fmri_data obj, regress
     % 2024-12-18: note that we aren't doing any X-pass filtering
-    bold_masked.covariates =[confounds, rmssd_outlier_regressor_matrix, condf2indic(session_means)];
-    [preprocessed_dat] = canlab_connectivity_preproc(bold_masked,'bpf', [.008 1/8],tr_duration, 'no_plots');
+    bold.covariates =[confounds, rmssd_outlier_regressor_matrix, condf2indic(session_means)];
+    preprocessed_dat = canlab_connectivity_preproc(bold,'bpf', [.008 1/2],tr_duration, 'no_plots');
 
     % only now, after masking and preprocessing, do we append to the everybody data
     % as usual, transpose to get time on the rows and voxel on the columns
     % currently not preallocating this (yeah I know sorry) bc looping over subjects isn't that bad
+    
+    bold_allsubjs = [bold_allsubjs; preprocessed_dat.dat'];
+
+    % masky mask
+    preprocessed_dat = apply_mask(preprocessed_dat, mask);
+
     bold_masked_allsubjs = [bold_masked_allsubjs; preprocessed_dat.dat'];
+
+
 end
 clear bold bold_masked preprocessed_dat
 
@@ -105,7 +121,7 @@ clear bold bold_masked preprocessed_dat
 
 %% PLS THEM TOGETHER!!!
 % you can change the first value to change the number of default comps if you like
-n_pls_comps = min(20, size(bold_masked_allsubjs,2));
+n_pls_comps = min(100, size(bold_masked_allsubjs,2));
 
 % the size should be determined by this point so preallocate to be good girls
 n_voxels = width(bold_masked_allsubjs);
@@ -128,4 +144,4 @@ for k=1:n_subjs
 end
 
 %% SAVE OUT RELEVANT RESULTS
-writematrix(pred_obs_corr, out_path);
+% writematrix(pred_obs_corr, out_path);
