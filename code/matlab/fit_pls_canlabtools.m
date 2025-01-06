@@ -104,9 +104,9 @@ for i=1:n_subjs
     end
 
     % append RMSSD regressors to fmriprep motion regressors, attach to the fmri_data obj, regress
-    % 2024-12-18: note that we aren't doing any X-pass filtering
     bold.covariates =[confounds, rmssd_outlier_regressor_matrix, condf2indic(session_means)];
-    preprocessed_dat = canlab_connectivity_preproc(bold,'bpf', [.008 1/2],tr_duration, 'no_plots');
+    % 2025-01: also doing some band-pass filtering around the range of expected task activation
+    preprocessed_dat = canlab_connectivity_preproc(bold,'bpf', [.008 1/2], tr_duration, 'no_plots');
 
     % only now, after masking and preprocessing, do we append to the everybody data
     % as usual, transpose to get time on the rows and voxel on the columns
@@ -151,4 +151,6 @@ for k=1:n_subjs
 end
 
 %% SAVE OUT RELEVANT RESULTS
-writematrix(pred_obs_corr, out_path);
+if exist('out_path', 'var') == 1
+    writematrix(pred_obs_corr, out_path);
+end
