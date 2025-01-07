@@ -54,15 +54,21 @@ options(clustermq.template = "clustermq.tmpl")
 # Install packages {{future}}, {{future.callr}}, and {{future.batchtools}} to allow use_targets() to configure tar_make_future() options.
 
 # Run the R scripts in the R/ folder with your custom functions:
-tar_source(c("code/R/"))
-# source("other_functions.R") # Source other scripts as needed.
+tar_source(c("code/R/utils/",
+             "code/R/make-stimlist.R",
+             "code/R/parse-events.R",
+             "code/R/parse-confounds.R",
+             "code/R/call-spm.R",
+             "code/R/call-canlabtools.R"))
+# Regular source this script because it's not called by a target per se
+# but is necessary for target construction
+source("code/R/set-study-defaults.R")
 
 ## other useful global vars ----
 # My dear little conda env
 conda_path <- "/home/mthieu/Repos/emonet-py/env/bin"
 matlab_path <- "/opt/MATLAB/R2024a/bin"
 # fMRI parameters that pass into multiple targets
-tr_length <- 2 # seconds
 nback_rating_duration <- 12 # tr units
 nback_blocks_per_run <- 4
 nback_block_threatenings <- c("dog", "frog", "spider", "above", "below")
@@ -738,25 +744,30 @@ targets_encoding.models <- list(
 
 # targets: maps out by task x subject x run ----
 
-path_here_fmri <- c("ignore", "data", "fmri")
-path_here_derivatives <- c(path_here_fmri, "derivatives", "fmriprep-23.1.4")
-tr_duration_mb8 <- 0.492
-disdaq_duration <- 8 # in seconds! CONSTANT PER PHIL!
-n_trs_kept_controlled <- 1001
-# for pilots sub-9902-9904, this was 1407
-# but before sub-0001, removed in-scanner ratings so the run is now shorter
-n_trs_kept_naturalistic <- 989
+# MANY IMPORTANT DEFAULTS NOW DEFINED IN set-study-defaults.R which is sourced by this script
 
-map_values <- crossing(task = c("controlled", "naturalistic"),
-                       # best only to include already fmriprepped subjects
-                       # EXCLUDE FOR MOTION: 5, 11, 18 (jeez)
-                       # any other missing numbers have just not been fmriprepped yet
-                       subject = c(1:4, 6:10, 12:15, 17, 19:21),
-                       run = 1:5) %>% 
-  filter(!(task == "naturalistic" & run > 3)) %>% 
-  mutate(task = paste("task", task, sep = "-"),
-         subject = sprintf("sub-%04d", subject),
-         run = sprintf("run-%02d", run))
+# Use the participants.tsv file as a code-agnostic way of tracking which subjects to use
+# It must be edited MANUALLY to label subjects as group "use" once their fmriqc has been checked and approved
+# that way, only subjects manually approved will be included in these analyses
+map_values <- inject(here::here(!!!path_here_fmri, "participants.tsv")) %>% 
+  read_tsv() %>% 
+  filter(group == "use") %>% 
+  select(subject = participant_id) %>% 
+  # task_defaults comes from the defaults script!
+  mutate(task_info = list(task_defaults)) %>% 
+  unnest(task_info) %>% 
+  select(subject, task, n_runs) %>% 
+  mutate(run = map(n_runs, \(x) 1:x)) %>% 
+  unchop(run) %>% 
+  select(-n_runs) %>% 
+  mutate(run = sprintf("run-%02d", run))
+
+task_defaults_list <- task_defaults %>% 
+  nest(info = -task) %>% 
+  mutate(info = map(info, \(x) as.list(x)), 
+         task = str_sub(task, start = 6L), 
+         info = set_names(info, nm = task)) %>% 
+  pull(info)
 
 targets_fmri <- list(
   tar_map(
@@ -775,9 +786,14 @@ targets_fmri <- list(
         # n_trs fed in here is not including any TRs during the 8-second wait period
         # it counts from the first TR whose acquisition crosses the 8-second boundary
         if (task == "task-controlled") {
-          parse_events_nback(events_raw, tr_duration = tr_duration_mb8, n_trs = n_trs_kept_controlled)
+          parse_events_nback(events_raw, 
+                             tr_duration = task_defaults_list$controlled$tr_duration, 
+                             n_trs = task_defaults_list$controlled$n_trs_kept)
         } else if (task == "task-naturalistic") {
-          parse_events_naturalistic(events_raw, stims_naturalistic, tr_duration = tr_duration_mb8, n_trs = n_trs_kept_naturalistic)
+          parse_events_naturalistic(events_raw, 
+                                    stims_naturalistic, 
+                                    tr_duration = task_defaults_list$naturalistic$tr_duration, 
+                                    n_trs = task_defaults_list$naturalistic$n_trs_kept)
         }
       },
     ),
@@ -790,8 +806,9 @@ targets_fmri <- list(
     tar_target(
       confounds_prespm,
       command = discard_confound_start(file_path = confounds,
-                                       tr_duration = tr_duration_mb8,
-                                       disdaq_duration = disdaq_duration),
+                                       # it's the same for both tasks so this is ok
+                                       tr_duration = task_defaults_list$controlled$tr_duration,
+                                       disdaq_duration = task_defaults_list$controlled$disdaq_duration),
       format = "file"
     ),
     tar_target(
@@ -858,7 +875,7 @@ targets_fmri <- list(
         
         make_encoding_timecourse(onsets = input_name,
                                  path_stim_activations = stim_activation_name,
-                                 run_duration = n_trs_kept_naturalistic * tr_duration_mb8) %>% 
+                                 run_duration = task_defaults_list$naturalistic$n_trs_kept * task_defaults_list$naturalistic$tr_duration) %>% 
           write_csv(file = out_path,
                     # because they're going into evil MATLAB
                     col_names = FALSE)
@@ -972,12 +989,12 @@ targets_fmri_level1 <- list(
     tar_target(
       name = target_name,
       command = {
-        this_end_tr <- if_else(task == "task-controlled", n_trs_kept_controlled, n_trs_kept_naturalistic)
+        these_defaults <- task_defaults_list[[str_sub(task, start = 6L)]]
         # the output file to be tracked is the SPM.mat file
         this_model_type <- paste0("model-", model_type)
         spm_spec_est_level1(model_path = file.path("ignore", "models", task, "acq-mb8", subject, this_model_type, "smoothed-4mm"),
-                            tr_duration = tr_duration_mb8,
-                            trs_to_use = 1:this_end_tr + (disdaq_duration %/% tr_duration_mb8),
+                            tr_duration = these_defaults$tr_duration,
+                            trs_to_use = 1:these_defaults$n_trs_kept + (these_defaults$disdaq_duration %/% these_defaults$tr_duration),
                             # these three need to take vectors containing the values for each run
                             bolds = a,
                             events_prespm = b,
@@ -1131,19 +1148,28 @@ targets_fmri_canlabtools <- list(
              input_names = map2(prefix, combine_vals, \(x, y) syms(paste(x, "task.naturalistic", y, sep = "_")))) %>% 
       select(target_name, input_names)
   ),
-  tar_target(
-    perf_encoding.flynet_task.naturalistic_region.sc,
-    command = canlabtools_fit_encoding_pls(out_path = here::here("ignore",
-                                                                 "outputs", 
-                                                                 "naturalistic_perf.flynet_sc.csv"),
-                                           tr_duration = tr_duration_mb8,
-                                           trs_to_use = 1:n_trs_kept_naturalistic + (disdaq_duration %/% tr_duration_mb8),
-                                           # these three need to take vectors containing the values for each run
-                                           bolds = bold_smoothed.4mm_task.naturalistic_all.subs,
-                                           activations = activations.flynet_task.naturalistic_all.subs,
-                                           confounds = confounds_prespm_task.naturalistic_all.subs,
-                                           script = matlab_fit_pls),
-    format = "file"
+  tar_eval(
+    tar_target(
+      target_name,
+      command = canlabtools_fit_encoding_pls(out_path = here::here("ignore",
+                                                                   "outputs", 
+                                                                   out_filename),
+                                             tr_duration = task_defaults_list$naturalistic$tr_duration,
+                                             trs_to_use = 1:task_defaults_list$naturalistic$n_trs_kept + (task_defaults_list$naturalistic$disdaq_duration %/% task_defaults_list$naturalistic$tr_duration),
+                                             # these three need to take vectors containing the values for each run
+                                             bolds = bold_smoothed.4mm_task.naturalistic_all.subs,
+                                             activations = activations_name,
+                                             confounds = confounds_prespm_task.naturalistic_all.subs,
+                                             script = matlab_fit_pls),
+      format = "file"
+      ),
+      values = crossing(encoding_type = c("flynet", "alexnet"), 
+                        nesting(roi = c("sc", "amyg"), 
+                                roi_label = c("Bstem_SC", "Amyg"))) %>% 
+        mutate(target_name = syms(sprintf("perf_encoding.%s_task.naturalistic_region.%s", encoding_type, roi)),
+               activations_name = syms(sprintf("activations.%s_task.naturalistic_all.subs", encoding_type)),
+               out_filename = sprintf("naturalistic_perf.%s_%s.csv", encoding_type, roi)) %>% 
+        select(target_name, activations_name, out_filename)
   )
 )
 
