@@ -3,10 +3,6 @@ addpath('/home/data/eccolab/Code/GitHub/spm12'); % per spm docs, do not genpath 
 addpath(genpath('/home/data/eccolab/Code/GitHub/CanlabCore'));
 addpath(genpath('/home/data/eccolab/Code/GitHub/Neuroimaging_Pattern_Masks'));
 
-% this atlas is not implemented through CanlabCore/Neuroimaging_Pattern_Masks 
-% so we're just gonna have to literally read in some niftis from this folder
-BrainstemNavigator_path = '/home/data/shared/BrainstemNavigator/0.9/2a.BrainstemNucleiAtlas_MNI/labels_thresholded_binary_0.35';
-
 %% define relevant variables
 fmri_dir = '/archival/projects/SPLaT/data/fmri/nifti';
 derivatives_dir = fullfile(fmri_dir, 'derivatives/fmriprep-23.1.4');
@@ -69,23 +65,8 @@ template = fmri_data(template_path);
 
 masks = cell(length(regions), 1);
 for i=1:length(regions)
-    % First, load the mask for this ROI
-    % for superior colliculus, manually use BrainstemNavigator ROI instead
-    if any(strcmp(regions{i},'Bstem_SC'))
-        mask = fmri_data(fullfile(BrainstemNavigator_path, 'SC_l.nii'));
-        mask_r = fmri_data(fullfile(BrainstemNavigator_path, 'SC_r.nii'));
-        mask.dat = mask.dat + mask_r.dat;
-        % and then explicitly exclude PAG from that SC ROI
-        pag = load_atlas('Kragel2019PAG');
-        pag = resample_space(pag,mask);
-        mask.dat(pag.dat>0) = 0;
-        clear mask_r pag
-    else
-        mask = select_atlas_subset(load_atlas('canlab2018'), regions(i));
-    end
-    masks{i} = mask;
+    masks{i} = select_this_atlas_subset(regions(i));
 end
-clear mask
 
 %% figures
 for r=1:length(regions)
