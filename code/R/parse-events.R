@@ -263,9 +263,9 @@ make_encoding_timecourse <- function (onsets,
     # approx only works colwise so cheese the map-ing
     map(\(x) approx(1:length(x)/stim_fps, 
                     x, 
-                    xout = seq(from = tr_duration_mb8, 
+                    xout = seq(from = tr_duration, 
                                to = run_duration, 
-                               by = tr_duration_mb8)) %>% 
+                               by = tr_duration)) %>% 
           pluck("y")) %>% 
     as_tibble()
   
