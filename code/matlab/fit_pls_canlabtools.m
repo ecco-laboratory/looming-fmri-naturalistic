@@ -57,8 +57,10 @@ n_runs = length(paths_nifti{1});
 activations = cell(size(paths_activations));
 % first loop over encoding model
 for i=1:length(paths_activations)
+    fprintf('Loading activations for model: %02d of %02d\n', i, length(paths_activations))
     % then subject
     for j=1:length(paths_activations{i})
+        fprintf('Current subject: %03d of %03d\n', j, n_subjs)
         % then run
         for k=1:length(paths_activations{i}{j})
             activations_this_run = readmatrix(paths_activations{i}{j}{k});
@@ -82,7 +84,7 @@ masks = cell(length(regions), 1);
 for i=1:length(regions)
     % First, load the mask for this ROI
     % for superior colliculus, manually use BrainstemNavigator ROI instead
-    if strcmp(regions{i},'BStem_SC')
+    if any(strcmp(regions{i},'Bstem_SC'))
         mask = fmri_data(fullfile(BrainstemNavigator_path, 'SC_l.nii'));
         mask_r = fmri_data(fullfile(BrainstemNavigator_path, 'SC_r.nii'));
         mask.dat = mask.dat + mask_r.dat;
@@ -90,11 +92,13 @@ for i=1:length(regions)
         pag = load_atlas('Kragel2019PAG');
         pag = resample_space(pag,mask);
         mask.dat(pag.dat>0) = 0;
+        clear mask_r pag
     else
         mask = select_atlas_subset(load_atlas('canlab2018'), regions(i));
     end
     masks{i} = mask;
 end
+clear mask
 
 %% LOAD FMRI TIMESERIES
 % SO IT IS HIGHLY INCUMBENT ON YOU TO MAKE SURE THAT THE ACTIVATIONS AND BOLDS COME IN IN 
@@ -151,12 +155,12 @@ for i=1:n_subjs
     
     % masky mask
     for j=1:length(masks)
-        preprocessed_dat = apply_mask(preprocessed_dat, mask);
-        bold_masked_allsubjs{j} = [bold_masked_allsubjs{j}; preprocessed_dat.dat'];
+        masked_dat = apply_mask(preprocessed_dat, masks{j});
+        bold_masked_allsubjs{j} = [bold_masked_allsubjs{j}; masked_dat.dat'];
     end
     
 end
-clear bold bold_masked these_confounds confounds session_means preprocessed_dat masked_dat
+clear bold bold_masked these_confounds confounds session_means rmssd rmssd_outlier_regressor_matrix preprocessed_dat masked_dat
 
 % TODO: decide whether this one is single subject or looping over subjects
 % MT is leaning toward doing this one single subject and having a loop called elsewhere
@@ -169,7 +173,7 @@ for i=1:length(activations)
         % you can change the first value to change the number of default comps if you like
         % this is set within the loop so if the current ROI has fewer voxels than the number of default comps
         % then only that ROI will have fewer comps accordingly
-        n_pls_comps = min(100, size(bold_masked_allsubjs{j}, 2));
+        n_pls_comps = min(100, int8(size(bold_masked_allsubjs{j}, 2)));
         
         % fit cross-validated PLS for this ROI
         % the size should be determined by this point so preallocate to be good girls

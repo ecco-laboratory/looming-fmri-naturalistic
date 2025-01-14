@@ -742,6 +742,48 @@ targets_encoding.models <- list(
   )
 )
 
+## targets: subject demographics (for progress reports etc) ----
+
+targets_demos <- list(
+  tar_target(
+    demos_raw,
+    # REDCap always exports ALL records. So you should manually update this to the most recent export file
+    # instead of this listing all files in folder
+    command = here::here("ignore", "recruitment", "ECCOLabPrescreen_DATA_LABELS_2025-01-10_1653.csv"),
+    format = "file"
+  ),
+  tar_target(
+    redcap_ids,
+    # same as above, update this to the new file when you upload a longer/newer list
+    command = here::here("ignore", "recruitment", "redcap_ids_run_20250110.csv"),
+  ),
+  tar_target(
+    demos_nih,
+    command = read_csv(demos_raw) %>% 
+      # get rid of names asap so you don't look
+      select(redcap_id = "Record ID", 
+             sex_birth = "Sex Assigned at Birth", 
+             starts_with("Race")) %>% 
+      # keep only subjects who've participated
+      semi_join(read_csv(redcap_ids), by = c("redcap_id" = "Prescreen ID")) %>% 
+      # nest races together
+      pivot_longer(cols = starts_with("Race"), 
+                   names_to = "race", 
+                   values_to = "checked") %>% 
+      nest(races = -c(redcap_id, sex_birth)) %>% 
+      # keep only selected races
+      mutate(races = map(races, \(x) filter(x, checked == "Checked") %>% 
+                           pull(race) %>% 
+                           # strip off extra stuff from old col names
+                           str_sub(start = 14L, end = -2L)), 
+             n_races_checked = map_int(races, \(x) length(x)), 
+             # patch in not reported if none checked
+             races = map_if(races, n_races_checked == 0, \(x) list("Not reported"), .else = \(x) x), 
+             # NIH doesn't let us report multiple races when people choose more than one
+             race_nih = map_chr(races, \(x) if (length(x) > 1) "More than one race" else x))
+  )
+)
+
 # targets: maps out by task x subject x run ----
 
 # MANY IMPORTANT DEFAULTS NOW DEFINED IN set-study-defaults.R which is sourced by this script
@@ -759,7 +801,7 @@ map_values <- inject(here::here(!!!path_here_fmri, "participants.tsv")) %>%
   select(subject, task, n_runs) %>% 
   mutate(run = map(n_runs, \(x) 1:x)) %>% 
   unchop(run) %>% 
-  select(-n_runs) %>% 
+  select(task, subject, run) %>% 
   mutate(run = sprintf("run-%02d", run))
 
 task_defaults_list <- task_defaults %>% 
@@ -875,6 +917,7 @@ targets_fmri <- list(
         
         make_encoding_timecourse(onsets = input_name,
                                  path_stim_activations = stim_activation_name,
+                                 tr_duration = task_defaults_list$naturalistic$tr_duration,
                                  run_duration = task_defaults_list$naturalistic$n_trs_kept * task_defaults_list$naturalistic$tr_duration) %>% 
           write_csv(file = out_path,
                     # because they're going into evil MATLAB
@@ -897,6 +940,33 @@ targets_fmri <- list(
              out_filename = sprintf("%s_%s_%s_acts-%s.csv", task, subject, run, encoding_type),
              across(c(input_name, stim_activation_name, target_name), syms)) %>% 
       select(input_name, stim_activation_name, target_name, out_filename)
+  ),
+  tar_eval(
+    tar_target(
+      name = target_name,
+      command = {
+        out_path <- here::here("ignore", "outputs", out_filename)
+        
+        flynet <- read_csv(input_activations_alexnet, col_names = FALSE)
+        alexnet <- read_csv(input_activations_alexnet, col_names = FALSE) %>% 
+          rename_with(\(x) str_replace(x, "X", "Y"))
+        
+        bind_cols(flynet, alexnet) %>% 
+          write_csv(file = out_path, col_names = FALSE)
+        
+        out_path
+      },
+      format = "file"
+    ),
+    values = map_values %>% 
+      filter(endsWith(task, "naturalistic")) %>% 
+      mutate(across(everything(), \(x) str_replace(x, "-", ".")),
+             input_activations_flynet = sprintf("activations.flynet_%s_%s_%s", task, subject, run),
+             input_activations_alexnet = sprintf("activations.alexnet_%s_%s_%s", task, subject, run),
+             target_name = sprintf("activations.flyalexnet_%s_%s_%s", task, subject, run),
+             out_filename = sprintf("%s_%s_%s_acts-flyalexnet.csv", task, subject, run),
+             across(c(starts_with("input"), target_name), syms)) %>% 
+      select(starts_with("input"), target_name, out_filename)
   )
 )
 
@@ -981,7 +1051,7 @@ targets_fmri_level1 <- list(
     values = map_values_across.run %>% 
       filter(endsWith(task, "naturalistic")) %>% 
       distinct(suffix, task, subject, combine_vals) %>% 
-      expand(nesting(suffix, task, subject, combine_vals), encoding_type = c("flynet", "alexnet")) %>% 
+      expand(nesting(suffix, task, subject, combine_vals), encoding_type = c("flynet", "alexnet", "flyalexnet")) %>% 
       mutate(suffix = paste(encoding_type, suffix, sep = "_")) %>% 
       make_eval_values(summarize_fmt = "run.%02d", target_prefix = "activations", prefix_sep = ".")
   ),
@@ -1142,34 +1212,43 @@ targets_fmri_canlabtools <- list(
       expand(combine_vals, 
              prefix = c("activations.flynet", 
                         "activations.alexnet",
+                        "activations.flyalexnet",
                         "bold_smoothed.4mm", 
                         "confounds_prespm")) %>% 
       mutate(target_name = syms(paste(prefix, "task.naturalistic", "all.subs", sep = "_")), 
              input_names = map2(prefix, combine_vals, \(x, y) syms(paste(x, "task.naturalistic", y, sep = "_")))) %>% 
       select(target_name, input_names)
   ),
-  tar_eval(
-    tar_target(
-      target_name,
-      command = canlabtools_fit_encoding_pls(out_path = here::here("ignore",
-                                                                   "outputs", 
-                                                                   out_filename),
-                                             tr_duration = task_defaults_list$naturalistic$tr_duration,
-                                             trs_to_use = 1:task_defaults_list$naturalistic$n_trs_kept + (task_defaults_list$naturalistic$disdaq_duration %/% task_defaults_list$naturalistic$tr_duration),
-                                             # these three need to take vectors containing the values for each run
-                                             bolds = bold_smoothed.4mm_task.naturalistic_all.subs,
-                                             activations = activations_name,
-                                             confounds = confounds_prespm_task.naturalistic_all.subs,
-                                             script = matlab_fit_pls),
-      format = "file"
-      ),
-      values = crossing(encoding_type = c("flynet", "alexnet"), 
-                        nesting(roi = c("sc", "amyg"), 
-                                roi_label = c("Bstem_SC", "Amyg"))) %>% 
-        mutate(target_name = syms(sprintf("perf_encoding.%s_task.naturalistic_region.%s", encoding_type, roi)),
-               activations_name = syms(sprintf("activations.%s_task.naturalistic_all.subs", encoding_type)),
-               out_filename = sprintf("naturalistic_perf.%s_%s.csv", encoding_type, roi)) %>% 
-        select(target_name, activations_name, out_filename)
+  tar_target(
+    perf_encoding.all_region.all_task.naturalistic,
+    command = {
+      out_filenames <- crossing(encoding_type = c("flynet", "alexnet", "flyalexnet"), 
+                                # the output of crossing will be alphabetically sorted for each col!!
+                        roi = c("amyg", "sc")) %>% 
+        mutate(out_filename = sprintf("naturalistic_perf.%s_%s.csv", encoding_type, roi),
+               out_filename = here::here("ignore", "outputs", out_filename)) %>% 
+        select(-roi) %>% 
+        chop(out_filename) %>% 
+        pull(out_filename)
+      
+      all_activations <- list(alexnet = activations.alexnet_task.naturalistic_all.subs,
+                              flynet = activations.flynet_task.naturalistic_all.subs,
+                              flyalexnet = activations.flyalexnet_task.naturalistic_all.subs)
+      
+      canlabtools_fit_encoding_pls(out_paths = out_filenames,
+                                   tr_duration = task_defaults_list$naturalistic$tr_duration,
+                                   trs_to_use = 1:task_defaults_list$naturalistic$n_trs_kept + (task_defaults_list$naturalistic$disdaq_duration %/% task_defaults_list$naturalistic$tr_duration),
+                                   # bold and confounds need to take vectors containing the values for each run
+                                   bolds = bold_smoothed.4mm_task.naturalistic_all.subs,
+                                   confounds = confounds_prespm_task.naturalistic_all.subs,
+                                   # if for more than one encoding model, they all need to go in nested together now
+                                   activations = all_activations,
+                                   # important to do it as a list so they'll go into separate cells
+                                   # and also in the same alphabetical order as the out filenames!
+                                   roi = list("Amyg", "Bstem_SC"),
+                                   script = matlab_fit_pls)
+      },
+    format = "file"
   )
 )
 
@@ -1582,6 +1661,7 @@ list(
   targets_stimlists_nback,
   targets_stimlists_naturalistic,
   targets_encoding.models,
+  targets_demos,
   targets_fmri,
   targets_fmri_level1,
   targets_fmri_level2,

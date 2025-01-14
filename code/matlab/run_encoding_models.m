@@ -1,99 +1,153 @@
-ss = [1:10 12:15 17 19 ];
-confound_files = dir('/archival/projects/SPLaT/data/fmri/nifti/derivatives/fmriprep-23.1.4/**/func/sub-0*naturalistic*_trimmed.txt');
-files = dir('/archival/projects/SPLaT/data/fmri/nifti/derivatives/fmriprep-23.1.4/**/func/smoothed_4mm_sub-0*naturalistic*.nii');
-models ={'alexnet','flynet'};
-regions = {'Bstem_SC','Amy'};
-trs_to_use = 17:1005;
+%% load libraries
+addpath('/home/data/eccolab/Code/GitHub/spm12'); % per spm docs, do not genpath it
+addpath(genpath('/home/data/eccolab/Code/GitHub/CanlabCore'));
+addpath(genpath('/home/data/eccolab/Code/GitHub/Neuroimaging_Pattern_Masks'));
 
-    for rr=1:length(regions);
-for m=1:length(models);
+% this atlas is not implemented through CanlabCore/Neuroimaging_Pattern_Masks 
+% so we're just gonna have to literally read in some niftis from this folder
+BrainstemNavigator_path = '/home/data/shared/BrainstemNavigator/0.9/2a.BrainstemNucleiAtlas_MNI/labels_thresholded_binary_0.35';
 
-        cc=1;
+%% define relevant variables
+fmri_dir = '/archival/projects/SPLaT/data/fmri/nifti';
+derivatives_dir = fullfile(fmri_dir, 'derivatives/fmriprep-23.1.4');
+activations_dir = '/home/data/eccolab/SPLaT_fMRI/ignore/outputs';
+subjects = readtable(fullfile(fmri_dir, 'participants.tsv'), FileType="delimitedtext");
+subjects = subjects(strcmp(subjects.group, 'use'), :);
+task_defaults = readstruct('/home/data/eccolab/SPLaT_fMRI/task_defaults.json');
+% just for the naturalistic task rn
+task_defaults = task_defaults(2);
 
-        for s=1:16;
-            for r=1:3;
-                paths_nifti{s}{r}=[files(cc).folder filesep files(cc).name];
-                paths_confounds{s}{r}= [confound_files(cc).folder filesep confound_files(cc).name];
-                paths_activations{s}{r}=sprintf(['/home/data/eccolab/SPLaT_fMRI/ignore/outputs/task.naturalistic_sub.%04d_run.%02d_acts-' models{m} '.csv'],ss(s),r);
+models ={'alexnet', 'flynet', 'flyalexnet'};
+regions = {{'Bstem_SC'},{'Amy'}};
 
-                cc=cc+1;
-            end;
+%% call the internal script if you must. RIGHT NOW THIS DOESN'T RUN!
+if false
+    trs_to_use = (1:task_defaults.n_trs_kept) + floorDiv(task_defaults.disdaq_duration, task_defaults.tr_duration);
+    
+    paths_nifti = cell(height(subjects), 1);
+    paths_confounds = cell(height(subjects), 1);
+    paths_activations = repmat({paths_nifti}, length(models), 1);
+    
+    % construct the inputs expected by the script bc not calling from targets
+    % here, construct the stuff that's consistent by subject/encoding model
+    for s=1:height(subjects)
+        for r=1:task_defaults.n_runs
+            
+            paths_nifti{s}{r} = fullfile(derivatives_dir, subjects.participant_id{s}, 'func', sprintf('smoothed_4mm_%s_task-naturalistic_run-%02d_space-MNI152NLin2009cAsym_res-2_desc-preproc_bold.nii', subjects.participant_id{s}, r));
+            paths_confounds{s}{r}= fullfile(derivatives_dir, subjects.participant_id{s}, 'func', sprintf('%s_task-naturalistic_run-%02d_desc-confounds_trimmed.txt', subjects.participant_id{s}, r));
+            for m=1:length(models)   
+                paths_activations{m}{s}{r}=fullfile(activations_dir, sprintf('task.naturalistic_%s_run.%02d_acts-%s.csv', strrep(subjects.participant_id{s}, '-', '.'), r, models{m}));  
+            end
         end
-        tr_duration = .492;
-        region = regions{rr};    paths_activations(5)=[];
-        paths_confounds(5)=[];
-        paths_nifti(5)=[];
+    end
+    
+    tr_duration = task_defaults.tr_duration;
+    
+    fit_pls_canlabtools;
+end
 
-        fit_pls_canlabtools;
+%% read in pred obs corrs that have been previously saved out
+pred_obs_corrs = cell(length(models), 1);
 
-        activations_bymodel{rr,m} = activations;
-        yhat_bymodel{rr,m} =yhat;
-        pred_obs_corr_bymodel{rr,m} =pred_obs_corr;
+for i=1:length(models)
+    pred_obs_corrs{i} = cell(length(regions), 1);
+    for j=1:length(regions)
+        switch regions{j}{1}
+            case 'Bstem_SC'
+            region_fname = 'sc';
+            case 'Amy'
+            region_fname = 'amyg';
+        end
+        pred_obs_corrs{i}{j} = readmatrix(fullfile(activations_dir, sprintf('naturalistic_perf.%s_%s.csv', models{i}, region_fname)));
     end
 end
 
-%% combine alexnet and flynet models
+%% load fMRI template and masks for visualization
 
-
-for k=1:n_subjs
-    train_idx = subj_indices~=k;
-    test_idx = ~train_idx;
-    [~,~,~,~,beta_cv] = plsregress(zscore([squeeze(activations_bymodel{1}(train_idx,:)) squeeze(activations_bymodel{2}(train_idx,:)) ]), bold_masked_allsubjs(train_idx,:), 100);
-
-    % ones() prepends an intercept column to the selected chunk of conv_features to be used for predicting against the betas
-    yhat_combined(test_idx,:)=[ones(sum(test_idx),1) zscore([squeeze(activations_bymodel{1}(test_idx,:)) squeeze(activations_bymodel{2}(test_idx,:)) ])]*beta_cv;
-
-    % has to be like this bc corr(X, Y) correlates each pair of columns (here, voxels)
-    % but we only care about correlating each voxel's real data to its own predicted data
-    % so diag() keeps only each voxel to itself
-    pred_obs_corr_combined(k,:)=diag(corr(yhat_combined(test_idx,:), bold_masked_allsubjs(test_idx,:)));
-
-end
-
-
-%%
-
-template_path = '/home/data/eccolab/SPLaT_fMRI/ignore/data/fmri/derivatives/fmriprep-23.1.4/sub-0001/func/smoothed_4mm_sub-0001_task-naturalistic_run-01_space-MNI152NLin2009cAsym_res-2_desc-preproc_bold.nii';
-
+template_path = fullfile(derivatives_dir, 'sub-0001/func/smoothed_4mm_sub-0001_task-naturalistic_run-01_space-MNI152NLin2009cAsym_res-2_desc-preproc_bold.nii');
 template = fmri_data(template_path);
-template=apply_mask(template,mask);
 
-for m=1:2
-    template.dat = squeeze(pred_obs_corr_bymodel(m,:,:))';
-    template.removed_images = 0;
-    tmap = ttest(template,.05,'FDR');
-
-    for s=1:n_subjs
-        r_map(m,:,s) = corr(mean(squeeze(yhat_bymodel(m,subj_indices==s,:)),2),bold_allsubjs(subj_indices==s,:));
+masks = cell(length(regions), 1);
+for i=1:length(regions)
+    % First, load the mask for this ROI
+    % for superior colliculus, manually use BrainstemNavigator ROI instead
+    if any(strcmp(regions{i},'Bstem_SC'))
+        mask = fmri_data(fullfile(BrainstemNavigator_path, 'SC_l.nii'));
+        mask_r = fmri_data(fullfile(BrainstemNavigator_path, 'SC_r.nii'));
+        mask.dat = mask.dat + mask_r.dat;
+        % and then explicitly exclude PAG from that SC ROI
+        pag = load_atlas('Kragel2019PAG');
+        pag = resample_space(pag,mask);
+        mask.dat(pag.dat>0) = 0;
+        clear mask_r pag
+    else
+        mask = select_atlas_subset(load_atlas('canlab2018'), regions(i));
     end
+    masks{i} = mask;
+end
+clear mask
 
-
-    xyz = template.volInfo.xyzlist*template.volInfo.mat(1:3,1:3);
-    xyz(template.removed_voxels,:)=[];
-    for i=1:3
-
-        xyz(:,i)=xyz(:,i)+template.volInfo.mat(i,4);
-
+%% figures
+for r=1:length(regions)
+    
+    for m=1:length(models)
+        plot_data = apply_mask(template, masks{r});
+        plot_data.dat = pred_obs_corrs{m}{r}';
+        plot_data.removed_images = 0;
+        tmap = ttest(plot_data, .05, 'FDR');
+        orthviews(tmap)
     end
+    
+    
+    plot_data.dat = pred_obs_corrs{2}{r}' - pred_obs_corrs{1}{r}';
+    plot_data.removed_images = 0;
+    tmap = ttest(plot_data,.05,'FDR');
+    orthviews(tmap)
+    
+end
 
-    xyz(:,1) =abs(xyz(:,1));
-
-    distance_from_boundary=zeros(1,height(xyz));
-    for i=1:height(xyz)
-        distance_from_boundary(i) =  pdist([[3 -30];xyz(i,1:2)]);
-
+% 2025-01-14 MT: Please be warned. Nothing below this point works because it now depends on stuff that is not written out by the wrapper script!
+% If you really want the whole brain connectivity it must be re-loaded
+%% plot betas as a function of distance from a physical plane in the brain?
+for m=1:length(models)
+    for r=1:length(regions)
+        plot_data = apply_mask(template, masks{r});
+        plot_data.dat = pred_obs_corrs{m}{r}';
+        plot_data.removed_images = 0;
+        tmap = ttest(plot_data, .05, 'FDR');
+        
+        % set to false because neither yhat and all subjs whole-brain BOLD are getting written out of fit_pls_canlabtools atm. deal with it
+        if false
+            for s=1:n_subjs
+                r_map(m,:,s) = corr(mean(squeeze(yhat_bymodel(m,subj_indices==s,:)),2),bold_allsubjs(subj_indices==s,:));
+            end
+        end
+        
+        % this section appears to be for calculating distance from an xy plane
+        xyz = plot_data.volInfo.xyzlist*template.volInfo.mat(1:3,1:3);
+        xyz(plot_data.removed_voxels,:)=[];
+        for i=1:3
+            xyz(:,i)=xyz(:,i) + plot_data.volInfo.mat(i,4);
+        end
+        
+        xyz(:,1) =abs(xyz(:,1));
+        
+        distance_from_boundary=zeros(1,height(xyz));
+        for i=1:height(xyz)
+            distance_from_boundary(i) = pdist([[3 -30];xyz(i,1:2)]);
+            
+        end
+        
+        subplot(2,1,m);hold all
+        title(models{m})
+        for s=1:size(plot_data.dat,2)
+            b(s,m,:) = glmfit(zscore(distance_from_boundary),template.dat(:,s));
+            scatter(distance_from_boundary,plot_data.dat(:,s),'.')
+        end
+        
+        xlabel 'Distance from [x = ±3, y = -30] (mm)'
+        ylabel 'Beta coefficient'
     end
-
-    subplot(2,1,m);hold all
-    title(models{m})
-    for s=1:size(template.dat,2)
-        b(s,m,:) = glmfit(zscore(distance_from_boundary),template.dat(:,s));
-        scatter(distance_from_boundary,template.dat(:,s),'.')
-    end
-
-    xlabel 'Distance from [x = ±3, y = -30] (mm)'
-    ylabel 'Beta coefficient'
-
 end
 
 %% connectivity with average predicted response
@@ -120,25 +174,3 @@ template = fmri_data(template_path);
 template.dat = squeeze(r_map(2,:,:)-r_map(1,:,:));
 tmap_conn = ttest(template,.01,'FDR');
 montage(tmap_conn)
-
-
-%% figures
-
-template = fmri_data(template_path);
-template=apply_mask(template,mask);
-
-template.dat = squeeze(pred_obs_corr_bymodel(1,:,:))';
-template.removed_images = 0;
-tmap_alexnet = ttest(template,.05,'FDR');
-orthviews(tmap_alexnet)
-
-template.dat = squeeze(pred_obs_corr_bymodel(2,:,:))';
-template.removed_images = 0;
-tmap_flynet = ttest(template,.05,'FDR');
-orthviews(tmap_flynet)
-
-
-template.dat = squeeze(pred_obs_corr_bymodel(2,:,:))' -squeeze(pred_obs_corr_bymodel(1,:,:))';
-template.removed_images = 0;
-tmap_flynet = ttest(template,.05,'FDR');
-orthviews(tmap_flynet)
