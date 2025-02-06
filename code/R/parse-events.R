@@ -1,5 +1,18 @@
 # various helper functions for converting psychopy data to SPM-able events ----
 
+## get path to events file from subject/run/task ----
+
+# run should be in run-%02d bids format
+get_raw_events <- function (subject, task, run) {
+  file <- list.files(here::here("ignore", "data", "beh", subject, "raw"),
+                      pattern = paste(subject, task, run, sep = "_"),
+                      full.names = TRUE)
+  # need it to explicitly error if the raw events haven't been uploaded yet
+  # or if multiple matching files are found (e.g. from re-starting a psychopy task)
+  stopifnot(length(file) == 1)
+  file
+}
+
 ## actually calculating event timing for onsets ----
 
 parse_events_naturalistic <- function (file_path, conditions_base, tr_duration, n_trs) {
@@ -183,19 +196,22 @@ format_events_matlab <- function (onsets, raw_path, onset_type) {
                     map_chr(wrap_single_quotes))
   )
   
-  # we do need out_path to come out for targets tracking
-  # even though it's already in the save part of matlab_commands
-  return (list(out_path = out_mat_path, matlab_commands = matlab_commands))
+  # go ahead and run the matlab code right from here
+  # assume matlab_path is a global variable that will be instantiated in the targets script
+  out <- run_matlab_target(matlab_commands, out_mat_path, matlab_path)
+  
+  return (out)
 }
 
 ## constructing encoding model activation timecourses from onset orders ----
 
-make_encoding_timecourse <- function (onsets, 
-                                      path_stim_activations,
-                                      tr_duration,
-                                      run_duration,
-                                      fixation_activation = NULL, 
-                                      stim_fps = 10L) {
+make_encoding_timecourse_matlab <- function (onsets, 
+                                             path_stim_activations,
+                                             out_path,
+                                             tr_duration,
+                                             run_duration,
+                                             fixation_activation = NULL, 
+                                             stim_fps = 10L) {
   
   # these come in from python so the unit numbers in the col names start indexing at 0
   stim_activations <- read_csv(path_stim_activations, name_repair = "unique") %>% 
@@ -269,7 +285,12 @@ make_encoding_timecourse <- function (onsets,
           pluck("y")) %>% 
     as_tibble()
   
-  return (out)
+  write_csv(out,
+            file = out_path,
+            # because they're going into evil MATLAB
+            col_names = FALSE)
+  
+  return (out_path)
 }
 
 ## patching confound cols in to get the corresponding beta.nii indices ----

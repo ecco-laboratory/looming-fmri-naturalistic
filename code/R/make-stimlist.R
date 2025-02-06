@@ -137,3 +137,49 @@ make_stimlist_nback <- function (out_path_glue,
           \(x, y) {write_csv(y,
                              file = x)})
 }
+
+make_stimlist_naturalistic <- function (stims, order_num) {
+  out_path_glue <- here::here("ignore",
+                              "stimlists",
+                              "naturalistic",
+                              paste0("stimlist_{sprintf('block%02d', block_num)}_",
+                                     order_num, ".csv"))
+  
+  allowed_isis <- 6:14 # this seems to land us at 91 stimuli when multiplied into that poisson pseudo randomizer below
+  
+  onsets <- stims %>% 
+    # must not be called "filename" bc that is used by psychopy to name the data files
+    rename(video_id = video) %>% 
+    # generate pseudo-random ISIs to jitter between videos
+    # these are pre-generated to have a fixed mean and then shuffled in order
+    mutate(iti_before = sample(rep(allowed_isis,
+                                   times = round(n() * dpois(allowed_isis, lambda = 7) / sum(dpois(allowed_isis, lambda = 7)))))) %>% 
+    # THIS randomizes the trial order
+    # Since we're basically doing an old-school slow event related design anyway,
+    # There is no added utility to using optimizeGA
+    slice_sample(prop = 1) %>% 
+    mutate(# 2024-08-26: NO LONGER RATING INSIDE SCANNER (to save time)
+      pct_task_elapsed = cumsum(duration + iti_before) / sum(duration + iti_before),
+      block_num = case_when(pct_task_elapsed < 0.34 ~ 1L,
+                            pct_task_elapsed < 0.67 ~ 2L,
+                            TRUE ~ 3L)) %>% 
+    group_by(block_num) %>% 
+    mutate(trial_num = 1:n(),
+           # because these ISIs set the interval _before_ the given video,
+           # manually go in and make sure the first one is always 8
+           # so that will serve as the discarded acquisitions time
+           # the last post-stim ISI is set as a constant in the PsychoPy task. don't worry about it here
+           iti_before = if_else(trial_num == 1, 8L, iti_before)) %>% 
+    ungroup()
+  
+  onsets %>% 
+    select(-pct_task_elapsed) %>% 
+    nest(trials = -block_num) %>% 
+    mutate(out_file = glue::glue(out_path_glue)) %$% 
+    # to write the files out
+    # walk2 should invisibly return out_file for targets
+    walk2(out_file, trials,
+          \(x, y) {write_csv(y,
+                             file = x)})
+  
+}

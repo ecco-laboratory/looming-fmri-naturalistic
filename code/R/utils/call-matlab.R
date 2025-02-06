@@ -14,3 +14,16 @@ call_function <- function (fn, args) {
 call_script <- function (script) glue("run({wrap_single_quotes(script)})")
 
 wrap_single_quotes <- function (x) glue("'{x}'")
+
+# wrapper around matlabr::run_matlab_code that returns the path to the output object
+# and that always prepends the path to the matlab install to the R search path
+# so that the system call works
+run_matlab_target <- function (commands, out_path, matlab_path) {
+  with_path(matlab_path, run_matlab_code(commands))
+  
+  if (dir.exists(out_path)) {
+    return (list.files(out_path, full.names = TRUE))
+  } else {
+    return (out_path)
+  }
+}

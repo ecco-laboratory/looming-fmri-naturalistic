@@ -16,12 +16,9 @@ spm_smooth <- function (bold_path, n_trs, kernel = 4, script = matlab_spmbatch_s
     call_script(script)
   )
   
-  with_path(
-    matlab_path, # assume this is a global variable that will be instantiated in the targets script
-    run_matlab_code(matlab_commands)
-  )
-  
-  return (out_path)
+  # assume matlab_path is a global variable that will be instantiated in the targets script
+  out <- run_matlab_target(matlab_commands, out_path, matlab_path)
+  return (out)
 }
 
 spm_spec_est_level1 <- function (model_path,
@@ -56,12 +53,8 @@ spm_spec_est_level1 <- function (model_path,
     call_script(script)
   )
   
-  with_path(
-    matlab_path,
-    run_matlab_code(matlab_commands)
-  )
-  
-  return (out_path)
+  out <- run_matlab_target(matlab_commands, out_path, matlab_path)
+  return (out)
 }
 
 spm_spec_est_level2 <- function (model_path,
@@ -84,12 +77,19 @@ spm_spec_est_level2 <- function (model_path,
     call_script(script)
   )
   
-  with_path(
-    matlab_path,
-    run_matlab_code(matlab_commands)
-  )
-  
-  return (out_path)
+  out <- run_matlab_target(matlab_commands, out_path, matlab_path)
+  return (out)
+}
+
+# not exactly an SPM call but it interfaces with SPM outputs so it lives here
+get_spm_level1_contrast <- function (spm_model_path, contrast_num) {
+    file.path(dirname(spm_model_path), sprintf("con_%04d.nii", contrast_num))
+}
+
+make_target_spm_level1_contrast <- function (spm_level1_target, contrast_num) {
+  tar_target_raw(name = paste0("con.", contrast_names[contrast_num]),
+                 command = quote(get_spm_level1_contrast(spm_level1_target, contrast_num)),
+                 format = "file")
 }
 
 spm_voi <- function (model_path, script = matlab_spmbatch_voi) {
@@ -102,10 +102,6 @@ spm_voi <- function (model_path, script = matlab_spmbatch_voi) {
     call_script(script)
   )
   
-  with_path(
-    matlab_path,
-    run_matlab_code(matlab_commands)
-  )
-  
-  return (out_path)
+  out <- run_matlab_target(matlab_commands, out_path, matlab_path)
+  return (out)
 }
