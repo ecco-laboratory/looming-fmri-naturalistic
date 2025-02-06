@@ -16,7 +16,7 @@
 echo "Monitoring job: $1"
 JOB_ID_LOG=$(echo $1 | tr _ -)
 ARRAY_ID=$(echo $1 | cut -d '_' -f 2)
-LOG_FILE_PATH="/home/mthieu/log/run_fmriprep.sh-${JOB_ID_LOG}.err"
+LOG_FILE_PATH="/home/mthieu/log/sbatch_fmriprep.sh-${JOB_ID_LOG}.err"
 while true
 do
     # find the error message in the log file
