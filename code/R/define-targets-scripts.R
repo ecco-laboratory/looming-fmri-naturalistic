@@ -49,6 +49,11 @@ targets_scripts <- list(
     format = "file"
   ),
   tar_target(
+    name = matlab_mask_fmri_data,
+    command = here::here("code", "matlab", "mask_fmri_data_canlabtools.m"),
+    format = "file"
+  ),
+  tar_target(
     name = matlab_parcellate_betas,
     command = here::here("code", "matlab", "parcellate_betas_canlabtools.m"),
     format = "file"
@@ -56,6 +61,11 @@ targets_scripts <- list(
   tar_target(
     name = matlab_fit_pls,
     command = here::here("code", "matlab", "fit_pls_canlabtools.m"),
+    format = "file"
+  ),
+  tar_target(
+    name = matlab_export_statmap,
+    command = here::here("code", "matlab", "export_statmap_canlabtools.m"),
     format = "file"
   )
 )

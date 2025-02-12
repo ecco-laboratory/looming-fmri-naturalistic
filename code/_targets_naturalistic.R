@@ -242,6 +242,29 @@ subtargets_encoding.timecourses_combine <- list(
               targets_fmri_by.run[["activations.flyalexnet"]])
 )
 
+subtargets_bold.masked <- list(
+  tar_target(name = bold.masked.sc,
+             command = canlabtools_mask_fmri_data(out_path = here::here("ignore", "data", "canlabtools", 
+                                                                        sprintf("%s_%s_region-sc_bold.mat", subject, task_bids)),
+                                                  tr_duration = task_defaults_list$tr_duration,
+                                                  trs_to_use = 1:task_defaults_list$n_trs_kept + (task_defaults_list$disdaq_duration %/% task_defaults_list$tr_duration),
+                                                  bolds = bold.smoothed,
+                                                  confounds = confounds.prespm,
+                                                  roi = "Bstem_SC",
+                                                  script = matlab_mask_fmri_data),
+             format = "file"),
+  tar_target(name = bold.masked.amyg,
+             command = canlabtools_mask_fmri_data(out_path = here::here("ignore", "data", "canlabtools", 
+                                                                        sprintf("%s_%s_region-amyg_bold.mat", subject, task_bids)),
+                                                  tr_duration = task_defaults_list$tr_duration,
+                                                  trs_to_use = 1:task_defaults_list$n_trs_kept + (task_defaults_list$disdaq_duration %/% task_defaults_list$tr_duration),
+                                                  bolds = bold.smoothed,
+                                                  confounds = confounds.prespm,
+                                                  roi = "Amyg",
+                                                  script = matlab_mask_fmri_data),
+             format = "file")
+)
+
 subtarget_betas.by.parcel <- tar_target(
   name = betas.by.parcel,
   command = {
@@ -290,7 +313,8 @@ targets_fmri_by.subject <- make_targets_fmri_by.subject(participants,
                                                         additional_targets = c(subtarget_events_combine, 
                                                                                subtargets_encoding.timecourses_combine,
                                                                                subtarget_betas.by.parcel,
-                                                                               subtarget_rdms))
+                                                                               subtarget_rdms,
+                                                                               subtargets_bold.masked))
 
 ## targets: maps out by task x contrast (combines across subject) ----
 
@@ -311,44 +335,84 @@ subtargets_fmri_across.subject <- list(
               command = list(!!!.x)),
   tar_combine(name = confounds.prespm_all.subs,
               targets_fmri_by.subject[["confounds.prespm"]],
-              command = list(!!!.x))
+              command = list(!!!.x)),
+  # the components of these are alreddy one per subject so we don't need to keep them as list
+  tar_combine(name = bold.masked.sc_all.subs,
+              targets_fmri_by.subject[["bold.masked.sc"]]),
+  tar_combine(name = bold.masked.amyg_all.subs,
+              targets_fmri_by.subject[["bold.masked.amyg"]])
 )
 
 ### canlabtools-based group analyses so help me god ----
 
+# across-subjects targets, but tar_mapped by ROI
+these_rois <- tibble(roi_name = c("amyg", "sc"),
+                     roi_canlabtools = c("Amyg", "Bstem_SC"))
+
 subtargets_fmri_canlabtools <- list(
-  tar_target(
-    perf_encoding.all_region.all_task.naturalistic,
-    command = {
-      out_filenames <- crossing(encoding_type = c("flynet", "alexnet", "flyalexnet"), 
-                                # the output of crossing will be alphabetically sorted for each col!!
-                        roi = c("amyg", "sc")) %>% 
-        mutate(out_filename = sprintf("naturalistic_perf.%s_%s.csv", encoding_type, roi),
-               out_filename = here::here("ignore", "outputs", out_filename)) %>% 
-        select(-roi) %>% 
-        chop(out_filename) %>% 
-        pull(out_filename)
-      
-      all_activations <- list(alexnet = activations.alexnet_all.subs,
-                              flynet = activations.flynet_all.subs,
-                              flyalexnet = activations.flyalexnet_all.subs)
-      
-      canlabtools_fit_encoding_pls(out_paths = out_filenames,
-                                   tr_duration = task_defaults_list$tr_duration,
-                                   trs_to_use = 1:task_defaults_list$n_trs_kept + (task_defaults_list$disdaq_duration %/% task_defaults_list$tr_duration),
-                                   # bold and confounds need to take vectors containing the values for each run
-                                   bolds = bold.smoothed_all.subs,
-                                   confounds = confounds.prespm_all.subs,
-                                   # if for more than one encoding model, they all need to go in nested together now
-                                   activations = all_activations,
-                                   # important to do it as a list so they'll go into separate cells
-                                   # and also in the same alphabetical order as the out filenames!
-                                   roi = list("Amyg", "Bstem_SC"),
-                                   script = matlab_fit_pls)
-      },
-    format = "file"
-  )
+  tar_map(
+    values = these_rois %>% 
+      expand(nesting(roi_name, roi_canlabtools), 
+             encoding_type = c("flynet", "alexnet", "flyalexnet")),
+    tar_target(name = perf.encoding.xval,
+               command = {
+                 out_path <- here::here("ignore", "outputs", sprintf("naturalistic_perf.%s_%s.csv", encoding_type, roi_name))
+                 
+                 activations <- switch(encoding_type,
+                                       alexnet = activations.alexnet_all.subs,
+                                       flynet = activations.flynet_all.subs,
+                                       flyalexnet = activations.flyalexnet_all.subs)
+                 
+                 bold_all.subs <- switch(roi_name, 
+                                         amyg = bold.masked.amyg_all.subs, 
+                                         sc = bold.masked.sc_all.subs)
+                 
+                 canlabtools_fit_encoding_pls(out_path = out_path,
+                                              tr_duration = task_defaults_list$tr_duration,
+                                              bolds = bold_all.subs,
+                                              # back to one encoding model at a time
+                                              activations = activations,
+                                              # important to do it as a list so they'll go into separate cells
+                                              # and also in the same alphabetical order as the out filenames!
+                                              script = matlab_fit_pls)
+               },
+               format = "file"),
+    tar_target(name = statmap.encoding,
+               command = {
+                 tvals <- perf.encoding.xval %>% 
+                   read_csv(col_names = FALSE) %>% 
+                   # get the cross-validated t-value for each voxel as the independent mean/SE over HELD-OUT SUBJECTS
+                   summarize(across(everything(), 
+                                    \(x) mean(x) / (sd(x)/sqrt(length(x))) )) %>% 
+                   # convert the 1-row dataframe to a vector. the voxel values should stay in the same order
+                   as.numeric() %>% 
+                   # round so that sending these to matlab through the command line won't be too long
+                   round(digits = 3)
+                 
+                 canlabtools_export_statmap(out_path = out_path,
+                                            roi = roi_canlabtools,
+                                            values = tvals,
+                                            script = matlab_export_statmap)
+               },
+               format = "file"),
+    names = c(roi_name, encoding_type)
+  ),
+  tar_combine(name = perf.encoding_combined,
+              tar_select_targets(starts_with("perf.encoding.xval")),
+             command = {
+               vctrs::vec_c(!!!.x) %>% 
+                 # must average across voxels to consider data across ROIs
+                 # but retain xval folds
+               map(\(x) read_csv(x, col_names = FALSE) %>% 
+                     rowwise() %>% 
+                     mutate(fold_num = 1:nrow(.),
+                            perf = sum(c_across(everything()))) %>% 
+                     ungroup() %>% 
+                     select(fold_num, perf)) %>% 
+                 bind_rows(.id = "target_name")
+               })
 )
+
 
 targets_fmri_across.subject <- make_targets_fmri_across.subject(targets_fmri_by.subject,
                                                                 contrast_names,

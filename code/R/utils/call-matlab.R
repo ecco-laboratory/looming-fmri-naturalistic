@@ -19,7 +19,8 @@ wrap_single_quotes <- function (x) glue("'{x}'")
 # and that always prepends the path to the matlab install to the R search path
 # so that the system call works
 run_matlab_target <- function (commands, out_path, matlab_path) {
-  with_path(matlab_path, run_matlab_code(commands))
+  matlab_exit_status <- with_path(matlab_path, run_matlab_code(commands))
+  stopifnot(matlab_exit_status == 0)
   
   if (dir.exists(out_path)) {
     return (list.files(out_path, full.names = TRUE))
