@@ -1,3 +1,7 @@
-main:
-  script: code/_targets.R
-  store: ignore/_targets
+controlled:
+  store: ignore/_targets/controlled/
+  script: code/_targets_controlled.R
+  
+naturalistic:
+  store: ignore/_targets/naturalistic/
+  script: code/_targets_naturalistic.R
