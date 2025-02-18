@@ -55,7 +55,7 @@ for i=1:length(rois)
     % critically, when it applies a mask to a stack of niftis
     % it will keep any voxel that is within the mask for ANY image
     % so we don't have to handle when some subjects have zero voxels in the mask
-    masked_dat = apply_mask(data, select_atlas_subset(atlas, rois(i)));
+    masked_dat = apply_mask(data, select_this_atlas_subset(rois(i), atlas));
     % transpose to get file on the row and voxel on the column
     % apply the beta/condition names as row names
     % this format is better for PLS bc the voxels need to be 'variables'
