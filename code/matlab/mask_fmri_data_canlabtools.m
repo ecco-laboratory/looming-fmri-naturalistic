@@ -27,38 +27,9 @@ n_runs = length(paths_nifti);
 mask = select_this_atlas_subset(region);
 
 %% LOAD FMRI TIMESERIES FOR A SINGLE SUBJECT/TASK, but ACROSS RUN
-% NB: 3 runs of the naturalistic task takes up nearly 3 GB of memory per subject to read in
-% keep in mind when you're setting slurm memory caps to run this
 
-% flag discard acquisition timepoints to exclude by logical indexing
-exclude = true(max(trs_to_use),1); 
-exclude(trs_to_use) = false; 
-% this should handle discarding the first several volumes for each run independently
-exclude = repmat(exclude, n_runs, 1);
-% load the actual niftis (this takes a little bit!)
-bold = fmri_data([paths_nifti(:)]);
-% discard those timepoints
-bold.dat(:,exclude) = [];
-
-%% PREPROCESS WITH CANLABTOOLS
-% first, use canlabtools method to ID volumes with a big sequential jump in RMSSD
-% the method generates a movie for interactive viewing by default. hence turning it off in the args
-[~, rmssd_outlier_regressor_matrix] = rmssd_movie(bold,'showmovie',false,'nodisplay');
-
-% then read in and row-run-stack fmriprep motion regressors
-confounds = []; session_means = [];
-for i=1:n_runs
-    these_confounds = readmatrix(paths_confounds{i});
-    confounds = [confounds; these_confounds];
-    session_means = [session_means; repmat(i, height(these_confounds), 1)];
-end
-
-% append RMSSD regressors to fmriprep motion regressors, attach to the fmri_data obj, regress
-bold.covariates =[confounds, rmssd_outlier_regressor_matrix, condf2indic(session_means)];
-% 2025-01: also doing some band-pass filtering around the range of expected task activation
-preprocessed_dat = canlab_connectivity_preproc(bold, 'bpf', [.008 1/2], tr_duration, 'no_plots');
-
-% masky mask
+% the preprocessing must be done on the whole-brain data because, e.g., the whole-image RMSSD flagger assumes whole brain data
+preprocessed_dat = preproc_fmri_data_canlabtools(trs_to_use, n_runs, tr_duration, paths_nifti, paths_confounds);
 masked_dat = apply_mask(preprocessed_dat, mask);
 
 %% SAVE OUT MASKED (smaller) DATA

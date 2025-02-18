@@ -19,7 +19,7 @@ addpath('/home/data/eccolab/Code/GitHub/spm12'); % per spm docs, do not genpath 
 addpath(genpath('/home/data/eccolab/Code/GitHub/CanlabCore'));
 
 %% VARIABLES THAT MUST BE DEFINED BEFORE THE SCRIPT IS SOURCED
-% THIS SCRIPT IS DESIGNED TO RUN ACROSS MULTIPLE SUBJECTS AND ENCODING MODELS!!!
+% THIS SCRIPT IS DESIGNED TO RUN ACROSS MULTIPLE SUBJECTS FOR A SINGLE ENCODING MODEL
 % with multiple runs per subject
 % the nested cell arrays are first by subject, then by run within subject
 % each of these should come in from targets calling script
@@ -30,11 +30,12 @@ addpath(genpath('/home/data/eccolab/Code/GitHub/CanlabCore'));
 % tr_duration: in seconds, for spm_hrf()
 % paths_activations: derived from target. 
 % nested cell array to csvs of 2D matrices already interpolated into TR frequency
-% THIS one is nested slightly differently: FIRST by encoding model, THEN by subject, THEN by run.
-% out_paths: for the performance on held out subjects. cell array by encoding model.
-% will write one file per encoding model. recommended to put the ROI in the file names as well so that when this is run
+% nested FIRST by subject, THEN by run.
+% out_path_perf: for the performance on held out subjects.
+% out_path_pred: for the model-predicted multivoxel timecourses.
+% recommended to put the ROI in the file names as well so that when this is run
 % multiple times for multiple ROIs, the files will be distinct. 
-% if this variable does not exist, performance will not be written out to file.
+% if these variables do not exist, performance/predictions will not be written out to file.
 
 n_subjs = length(paths_masked);
 n_runs = length(paths_activations{1});
@@ -44,27 +45,7 @@ n_runs = length(paths_activations{1});
 % BY THE TIME THEY GET HERE, BUT NOT CONVOLVED YET
 % so keep the dims separate by run until you convolve
 
-activations = [];
-disp('Loading encoding model activation timecourses')
-% then subject
-for j=1:length(paths_activations)
-    fprintf('Current subject: %03d of %03d\n', j, n_subjs)
-    % then run
-    for k=1:length(paths_activations{j})
-        activations_this_run = readmatrix(paths_activations{j}{k});
-        % Convolve features with HRF here
-        % holy shit... matlab anonymous functions
-        conv_activations = arrayfun(@(i) conv(double(activations_this_run(:, i)), spm_hrf(tr_duration)), 1:size(activations_this_run, 2), 'UniformOutput', false);
-        conv_activations = cell2mat(conv_activations);
-        % trim off the tail introduced by the convolution
-        conv_activations = conv_activations(1:height(activations_this_run), :);
-        % now after the run activations have been convolved we can concatenate onto the main
-        % should end up with a 2D array where time x subject is on the rows and unit is on the cols
-        activations = [activations; conv_activations];
-    end
-end
-
-clear activations_this_run conv_activations
+activations = load_encoding_activations_allsubs(paths_activations, tr_duration);
 
 %% LOAD PRE-PREPROCESSED AND MASKED FMRI TIMESERIES FOR THIS ROI
 % SO IT IS HIGHLY INCUMBENT ON YOU TO MAKE SURE THAT THE ACTIVATIONS AND BOLDS COME IN IN 
@@ -109,29 +90,39 @@ pred_obs_corr = zeros(n_subjs, n_voxels);
 % you can change the first value to change the number of default comps if you like
 % this is set within the loop so if the current ROI has fewer voxels than the number of default comps
 % then only that ROI will have fewer comps accordingly
-n_pls_comps = min(100, int8(n_voxels));
+n_pls_comps = min([100, n_voxels, width(activations)]);
 fprintf('Fitting with %03d PLS components\n', n_pls_comps)
 
+fprintf('Current held-out subject:           ')
 for k=1:n_subjs
-    fprintf('Current held-out subject: %03d of %03d\n', k, n_subjs)
+    fprintf('\b\b\b\b\b\b\b\b\b\b%03d of %03d', k, n_subjs)
     train_idx = subj_indices~=k;
     test_idx = ~train_idx;
 
     [~,~,~,~,beta_cv] = plsregress(activations(train_idx,:), bold_masked_allsubjs(train_idx,:), n_pls_comps);
     
     % ones() prepends an intercept column to the selected chunk of conv_features to be used for predicting against the betas
-    yhat(test_idx,:)=[ones(sum(test_idx),1) activations(test_idx,:)]*beta_cv;
+    % TODO: save out yhat to use as the seed timecourse for model-based connectivity analysis later
+    yhat(test_idx,:) = [ones(sum(test_idx),1) activations(test_idx,:)]*beta_cv;
     
     % has to be like this bc corr(X, Y) correlates each pair of columns (here, voxels)
     % but we only care about correlating each voxel's real data to its own predicted data
     % so diag() keeps only each voxel to itself
-    pred_obs_corr(k,:)=diag(corr(yhat(test_idx,:), bold_masked_allsubjs(test_idx,:)));
+    pred_obs_corr(k,:) = diag(corr(yhat(test_idx,:), bold_masked_allsubjs(test_idx,:)));
     
 end
+fprintf('\n')
 
 %% SAVE OUT RELEVANT RESULTS
-if exist('out_path', 'var') == 1
-    writematrix(pred_obs_corr, out_path);
+% 2025-02-14: It would seem that we need this to write out the yhat predictions AND the yhat-y correlations
+% yhat-y correlations for "overall performance" as per usual
+% but the direct yhats are needed later for, e.g., correlating predictions from different models
+% and as the seed timecourses for model-based functional connectivity analyses
+% the target for this will track both of these file paths together. call them independently later as you need them
+if exist('out_path_perf', 'var') == 1
+    writematrix(pred_obs_corr, out_path_perf);
 end
 
-clear mask
+if exist('out_path_pred', 'var') == 1
+    writematrix(yhat, out_path_pred);
+end

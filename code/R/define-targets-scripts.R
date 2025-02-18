@@ -49,18 +49,42 @@ targets_scripts <- list(
     format = "file"
   ),
   tar_target(
+    name = matlab_select_atlas_subset,
+    command = here::here("code", "matlab", "select_this_atlas_subset.m"),
+    format = "file"
+  ),
+  tar_target(
     name = matlab_mask_fmri_data,
-    command = here::here("code", "matlab", "mask_fmri_data_canlabtools.m"),
+    command = {
+      matlab_select_atlas_subset
+      here::here("code", "matlab", "mask_fmri_data_canlabtools.m")
+      },
     format = "file"
   ),
   tar_target(
     name = matlab_parcellate_betas,
-    command = here::here("code", "matlab", "parcellate_betas_canlabtools.m"),
+    command = {
+      matlab_select_atlas_subset
+      here::here("code", "matlab", "parcellate_betas_canlabtools.m")
+      },
+    format = "file"
+  ),
+  tar_target(
+    name = matlab_load_encoding_activations,
+    command = here::here("code", "matlab", "load_encoding_activations_allsubs.m"),
     format = "file"
   ),
   tar_target(
     name = matlab_fit_pls,
-    command = here::here("code", "matlab", "fit_pls_canlabtools.m"),
+    command = {
+      matlab_load_encoding_activations
+      here::here("code", "matlab", "fit_pls_canlabtools.m")
+      },
+    format = "file"
+  ),
+  tar_target(
+    name = matlab_fit_model_connectivity,
+    command = here::here("code", "matlab", "fit_modelbased_connectivity_canlabtools.m"),
     format = "file"
   ),
   tar_target(

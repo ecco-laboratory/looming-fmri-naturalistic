@@ -10,7 +10,11 @@ function mask = select_this_atlas_subset(region, canlab_atlas)
     % default atlas if none specified
     switch nargin
         case 1
-            canlab_atlas = 'canlab2018';
+            canlab_atlas = load_atlas('canlab2018');
+        case 2
+            if ischar(canlab_atlas)
+                canlab_atlas = load_atlas(canlab_atlas);
+            end
     end
     
     % load the mask for this ROI
@@ -25,6 +29,6 @@ function mask = select_this_atlas_subset(region, canlab_atlas)
         mask.dat(pag.dat>0) = 0;
         clear mask_r pag
     else
-        mask = select_atlas_subset(load_atlas(canlab_atlas), region);
+        mask = select_atlas_subset(canlab_atlas, region);
     end
 end
