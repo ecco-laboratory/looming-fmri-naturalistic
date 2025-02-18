@@ -22,7 +22,7 @@ run_matlab_target <- function (commands, out_path, matlab_path) {
   matlab_exit_status <- with_path(matlab_path, run_matlab_code(commands))
   stopifnot(matlab_exit_status == 0)
   
-  if (dir.exists(out_path)) {
+  if (length(out_path) == 1 & all(dir.exists(out_path))) {
     return (list.files(out_path, full.names = TRUE))
   } else {
     return (out_path)
