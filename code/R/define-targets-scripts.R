@@ -83,6 +83,14 @@ targets_scripts <- list(
     format = "file"
   ),
   tar_target(
+    name = matlab_pred_pls,
+    command = {
+      matlab_load_encoding_activations
+      here::here("code", "matlab", "pred_pls_canlabtools.m")
+    },
+    format = "file"
+  ),
+  tar_target(
     name = matlab_fit_model_connectivity,
     command = here::here("code", "matlab", "fit_modelbased_connectivity_canlabtools.m"),
     format = "file"
