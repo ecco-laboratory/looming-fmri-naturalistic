@@ -9,6 +9,7 @@ function activations = load_encoding_activations_allsubs(paths_activations, tr_d
     for j=1:n_subjs
         fprintf('\b\b\b\b\b\b\b\b\b\b%03d of %03d', j, n_subjs)
         % then run
+        activations_this_subj = [];
         for k=1:length(paths_activations{j})
             activations_this_run = readmatrix(paths_activations{j}{k});
             % Convolve features with HRF here
@@ -19,8 +20,12 @@ function activations = load_encoding_activations_allsubs(paths_activations, tr_d
             conv_activations = conv_activations(1:height(activations_this_run), :);
             % now after the run activations have been convolved we can concatenate onto the main
             % should end up with a 2D array where time x subject is on the rows and unit is on the cols
-            activations = [activations; conv_activations];
+            activations_this_subj = [activations_this_subj; conv_activations];
         end
+        % 2025-02-26: DON'T independently column-z-score each unit activation, 
+        % so as not to break potentially meaningful magnitude-level differences between units in a model
+        % handle between-model differences (when different sets of predictors are col-bound together) another way
+        activations = [activations; activations_this_subj];
     end
     fprintf('\n')
 end
