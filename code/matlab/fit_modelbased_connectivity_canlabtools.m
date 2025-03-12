@@ -32,10 +32,11 @@ n_runs = length(paths_nifti{1});
 %% LOAD IN DATA FROM TARGETS PATHS
 % model-predicted multivoxel timecourse for a given seed region and encoding model
 % THE SEED ROI AND ENCODING MODEL ARE IMPLICITLY BY THE PATH TO THE TIMECOURSE
+% 2025-02-18: the first column of this is now subject indices
 seed_yhat = readmatrix(seed_yhat_path);
 % average the predicted response across "voxels" of the seed region 
 % to get a sub-time vector for the whole seed region
-seed_yhat = squeeze(mean(seed_yhat,2));
+seed_yhat_mean = squeeze(mean(seed_yhat(:, 2:end),2));
 
 %% READ AND CANLABTOOLS-PREPROCESS EVERYONE'S WHOLE BRAIN DATA :(
 
@@ -46,20 +47,16 @@ bold_height = height(dat_preprocessed);
 
 WB_DATA = zeros(n_subjs*bold_height, width(dat_preprocessed));
 
-subj_indices = zeros(n_subjs*bold_height, 1);
-this_subj_indices = 1:bold_height;
-WB_DATA(this_subj_indices, :) = zscore(dat_preprocessed);
-subj_indices(this_subj_indices, 1) = 1;
+subj_indices = seed_yhat(:, 1); % may as well since it already exists
+WB_DATA(subj_indices==1, :) = zscore(dat_preprocessed);
 
 % loop over the rest of the subjects
 for s=2:n_subjs
     clear bold_preprocessed dat_preprocessed
     bold_preprocessed = preproc_fmri_data_canlabtools(trs_to_use, n_runs, tr_duration, paths_nifti{s}, paths_confounds{s});
     dat_preprocessed = bold_preprocessed.dat';
-    this_subj_indices = (1:bold_height) + (bold_height * (s-1));
     % no masking. whole brain. not parcel-averaged. all voxels. huge.
-    WB_DATA(this_subj_indices, :) = zscore(dat_preprocessed);
-    subj_indices(this_subj_indices, 1) = s;
+    WB_DATA(subj_indices==s, :) = zscore(dat_preprocessed);
 end
 clear bold_preprocessed dat_preprocessed
 
@@ -68,55 +65,16 @@ clear bold_preprocessed dat_preprocessed
 % leave-one-subject-out cross-validated functional connectivity. great
 vox_corr_wb = zeros(n_subjs, width(WB_DATA));
 
+fprintf('Correlating whole-brain data with model-seed timecourse...\n')
 for s = 1:n_subjs
     % correlate the model-predicted seed timecourse with each whole-brain voxel timecourse
     % you have to loop over subjects to get the prediction for each subject. 
     % if you just corr on the whole thing it gives you the seed vox-target vox correlation across all subjects
     % we now need to save the mean y-hats out for the permutation testing later as well
-    vox_corr_wb(s,:) = corr(seed_yhat(subj_indices==s), WB_DATA(subj_indices==s,:));
+    vox_corr_wb(s,:) = corr(seed_yhat_mean(subj_indices==s), WB_DATA(subj_indices==s,:));
 end
 
-%% PERMUTE VOXEL-WISE P-VALUES
-% 2025-02-17: NOT RUNNING THIS FOR NOW BC IT SHOULD PROB BE MOVED TO ANOTHER SCRIPT
-if false
-    % remembah! by default matlab mean does colmeans, so this averages over subjects. (as is desired.)
-    mean_vox_corr_wb = mean(vox_corr_wb, "omitnan");
-
-    n_permutations = 5000;
-    vox_corr_wb_perm = zeros(n_permutations, size(vox_corr_wb, 2));
-
-    for it = 1:n_permutations
-        time_elapsed = seconds(toc);
-        time_per_perm = time_elapsed/it;
-        time_elapsed.Format = 'dd:hh:mm:ss';
-        fprintf('Permutations: %d/%d. Time per perm: %s. Total time elapsed: %s\n', it, n_permutations, time_per_perm, time_elapsed)
-
-        % generate the shuffler. will randomly flip the sign of some subjects' correlations
-        % thus permuting the sign of the across-subjects correlation
-        flipper=randi(2,1,n_subjs);
-        % bc randi only lets you randomize positive ints. this cheat gets you +1s and -1s
-        flipper(flipper==2)=-1;
-
-        % actually shuffle the data
-        vox_corr_wb_flipped = zeros(size(vox_corr_wb));
-        % loop over voxels so that the flipper doesn't have to be repeated voxel-long
-        for v=1:size(vox_corr_wb,2)
-            vox_corr_wb_flipped(:,v)=vox_corr_wb(:,v).*flipper';
-        end
-
-        % collect the permuted across-subject means
-        vox_corr_wb_perm(it, :) = mean(vox_corr_wb_flipped, "omitnan");
-    end
-
-    phat_vox_wb = zeros(size(mean_vox_corr_wb));
-    for v=1:length(phat_vox_wb)
-        phat_vox_wb(v) = 1-(sum(abs(mean_vox_corr_wb(v))>abs(vox_corr_wb_perm(:,v))))/(n_permutations+1);
-    end
-
-    % replace NaN voxels with p = 1 here
-    phat_vox_wb(isnan(phat_vox_wb)) = 1;
-end
-
-%% write out whole-brain correlations. to tabular data
+%% write out whole-brain correlations. to tabular data though
 % do the between model diffs in another script. this operates on one encoding model at a time
+fprintf('Saving results to file!\n')
 writematrix(vox_corr_wb, out_path);
