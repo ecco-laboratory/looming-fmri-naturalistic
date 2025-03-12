@@ -205,6 +205,72 @@ format_events_matlab <- function (onsets, raw_path, onset_type) {
 
 ## constructing encoding model activation timecourses from onset orders ----
 
+# this one just transforms an onsets-formatted dataframe into one with 1 row per TR
+# and a column saying what stimulus (or fixation) is on screen
+make_condition_timecourse <- function (onsets, 
+                                       tr_duration, 
+                                       n_trs) {
+  stims <- tibble()
+  
+  for (i in 0:(n_trs-1)) {
+    this_time <- i * tr_duration
+    # the most recent stimulus to have appeared on screen (might have already gone away)
+    # bind 0 onto the indices to handle the case of TRs before the first stim has appeared
+    idx_last_stim <- max(c(0L, which(this_time - onsets$onset >= 0)))
+    # this labels the entire TR as whatever's on screen at the beginning of the TR
+    if (idx_last_stim > 0) {
+      stim_still_onscreen <- this_time - onsets$onset[idx_last_stim] <= onsets$duration[idx_last_stim]
+    } else {
+      stim_still_onscreen <- FALSE
+    }
+    
+    if (stim_still_onscreen) {
+      this_stim <- onsets %>% 
+        slice(idx_last_stim) %>% 
+        select(condition) %>% 
+        mutate(tr_num = i+1)
+    } else {
+      # if not, it's fixation
+      this_stim <- tibble(tr_num = i+1,
+                          condition = "fixation")
+    }
+      
+    stims <- stims %>% 
+      bind_rows(this_stim)
+  }
+  
+  return (stims)
+}
+
+# takes single-subject timecourse (result of make_condition_timecourse but row-concatenated across runs)
+# and relabels the video_id column not to correspond to the actual presentation,
+# but an endspike window anchored around the END of each video.
+# using R convention, -1 corresponds to the final TR of each video
+# window length is inclusive of start and end
+# returns with an appropriate lag-windowed version of the timecourse
+# where TRs not belonging to a stimulus are marked as NA
+relabel_timecourse_endspike <- function (timecourse,
+                                         window_start = -2L,
+                                         window_length = 10L) {
+  timecourse$video_id_lagged <- NA
+  for (i in 1:(nrow(timecourse)-1)) {
+    # if a final TR is identified, label a 10-TR (4.92 second) window from the last 2 TRs within the video to the 8 TRs after
+    # to get end-of-video related BOLD variation??? peut-etre?
+    if (timecourse$video_id[i] != "fixation" & timecourse$video_id[i+1] == "fixation") {
+      this_window_start <- i+1-window_start
+      this_window_end <- i+window_length-1
+      timecourse$video_id_lagged[this_window_start:this_window_end] <- timecourse$video_id[i]
+    }
+  }
+  
+  out <- timecourse %>% 
+    select(-video_id) %>% 
+    rename(video_id = video_id_lagged)
+  
+  return (out)
+}
+
+# this one assembles activation timecourses and then outputs to header-less tabular data for matlab
 make_encoding_timecourse_matlab <- function (onsets, 
                                              path_stim_activations,
                                              out_path,
