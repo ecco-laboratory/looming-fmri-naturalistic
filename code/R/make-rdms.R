@@ -22,3 +22,15 @@ make_rdms_from_beta <- function (path_parcel_beta) {
   
   return (betas)
 }
+
+halve_tidy_rdm <- function (rdm_full, row_col, col_col) {
+  row_col <- enquo(row_col)
+  col_col <- enquo(col_col)
+  
+  rdm_halved <- rdm_full %>% 
+    mutate(sorter = map2_chr({{row_col}}, {{col_col}}, \(x, y) paste(sort(c(x, y)), collapse = " "))) %>% 
+    distinct(sorter, .keep_all = TRUE) %>% 
+    select(-sorter)
+  
+  return (rdm_halved)
+}
