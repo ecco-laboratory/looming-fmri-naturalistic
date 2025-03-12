@@ -32,10 +32,20 @@ canlabtools_export_statmap <- function (out_path,
   matlab_commands = c(
     assign_variable("out_path", out_path),
     rvec_to_matlab(values, matname = "zs"),
-    # this modeling script operates across subjects but takes in data by run
-    # so these expect lists with one list-field per subject containing vectors for runs
-    # the ROI has already been selected by the choice of paths_masked
-    rvec_to_matlabcell(roi, matname = "region"),
+    call_script(script)
+  )
+  
+  if (!is.null(roi)) {
+    matlab_commands <- c(
+      matlab_commands,
+      # the ROI has already been constrained by the source data
+      # this will fail weirdly if you don't make usre this matches up with the prereq values
+      rvec_to_matlabcell(roi, matname = "region")
+    )
+  }
+  
+  matlab_commands <- c(
+    matlab_commands,
     call_script(script)
   )
   
@@ -43,14 +53,16 @@ canlabtools_export_statmap <- function (out_path,
   return (out)
 }
 
-canlabtools_fit_encoding_pls <- function (out_path_perf,
-                                          out_path_pred,
-                                          tr_duration,
-                                          bolds_masked,
-                                          activations, 
-                                          script = matlab_fit_pls) {
+canlabtools_pred_encoding_pls <- function (out_path_perf,
+                                           out_path_pred,
+                                           tr_duration,
+                                           bolds_masked,
+                                           activations1 = NA,
+                                           activations2 = NA,
+                                           betas,
+                                           script = matlab_pred_pls) {
   
-  matlab_commands = c(
+  matlab_commands <- c(
     assign_variable("out_path_perf", out_path_perf),
     assign_variable("out_path_pred", out_path_pred),
     # need to pass this in for the HRF convolution
@@ -59,11 +71,66 @@ canlabtools_fit_encoding_pls <- function (out_path_perf,
     # so these expect lists with one list-field per subject containing vectors for runs
     # the ROI has already been selected by the choice of paths_masked
     rvec_to_matlabcell(bolds_masked, matname = "paths_masked"),
-    rvec_to_matlabcell(activations, matname = "paths_activations"),
-    call_script(script)
+    assign_variable("path_betas", betas)
   )
   
-  out <- run_matlab_target(matlab_commands, c(out_path_perf, out_path_pred), matlab_path)
+  # stop if both sets of activations are specified. no reason for this to run if that's the case 
+  # bc then it's just the regular predictions that come out of the original model fit
+  stopifnot(!(all(is.na(activations1)) & all(is.na(activations2))))
+  # is.na is vectorized, including for lists. lol... 
+  # I guess we could just test if it's length 1 or not but this seems safe?
+  if (!all(is.na(activations1))) {
+    matlab_commands <- c(matlab_commands,
+                         rvec_to_matlabcell(activations1, matname = "paths_activations_1"))
+  } else if (!all(is.na(activations2))) {
+    matlab_commands <- c(matlab_commands,
+                         rvec_to_matlabcell(activations2, matname = "paths_activations_2"))
+  }
+  
+  matlab_commands <- c(matlab_commands,
+                       call_script(script))
+  
+  out <- run_matlab_target(matlab_commands, 
+                           c(out_path_perf, out_path_pred), 
+                           matlab_path)
+  return (out)
+}
+
+canlabtools_fit_encoding_pls <- function (out_path_perf,
+                                          out_path_pred,
+                                          out_path_betas,
+                                          tr_duration,
+                                          bolds_masked,
+                                          activations1,
+                                          # must set as NA instead of NULL because the value comes in from a vector
+                                          activations2 = NA,
+                                          script = matlab_fit_pls) {
+  
+  matlab_commands <- c(
+    assign_variable("out_path_perf", out_path_perf),
+    assign_variable("out_path_pred", out_path_pred),
+    assign_variable("out_path_betas", out_path_betas),
+    # need to pass this in for the HRF convolution
+    assign_variable("tr_duration", tr_duration),
+    # this modeling script operates across subjects but takes in data by run
+    # so these expect lists with one list-field per subject containing vectors for runs
+    # the ROI has already been selected by the choice of paths_masked
+    rvec_to_matlabcell(bolds_masked, matname = "paths_masked"),
+    rvec_to_matlabcell(activations1, matname = "paths_activations_1")
+  )
+  
+  # is.na is vectorized, including for lists. lol... # I guess we could just test if it's length 1 or not but this seems safe?
+  if (!all(is.na(activations2))) {
+    matlab_commands <- c(matlab_commands,
+                         rvec_to_matlabcell(activations2, matname = "paths_activations_2"))
+  }
+  
+  matlab_commands <- c(matlab_commands,
+                       call_script(script))
+  
+  out <- run_matlab_target(matlab_commands, 
+                           c(out_path_perf, out_path_pred, out_path_betas), 
+                           matlab_path)
   return (out)
 }
 
