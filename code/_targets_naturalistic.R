@@ -13,20 +13,22 @@ library(rlang)
 tar_option_set(
   packages = c("withr",
                "matlabr",
+               "tidymodels",
+               "plsmod",
                "tidyverse",
                "magrittr",
                "glue",
                "rlang",
                "qualtRics"), # packages that your targets need to run
   controller = crew.cluster::crew_controller_slurm(
-    workers = 6,
+    workers = 12,
     seconds_idle = 30,
     options_cluster = crew.cluster::crew_options_slurm(
       verbose = TRUE,
       script_lines = "#SBATCH --account=default",
       log_output = "/home/%u/log/crew_log_%A.out",
       log_error = "/home/%u/log/crew_log_%A.err",
-      memory_gigabytes_required = 32,
+      memory_gigabytes_required = 8,
       cpus_per_task = 1,
       time_minutes = 1339,
       partition = "day-long"
@@ -44,7 +46,10 @@ tar_source(c("code/R/utils/",
              "code/R/parse-bold.R",
              "code/R/call-spm.R",
              "code/R/call-canlabtools.R",
-             "code/R/make-rdms.R"))
+             "code/R/make-rdms.R",
+             "code/R/utils/tidymodels-helpers.R",
+             "code/R/proc-post-canlabtools.R",
+             "code/R/make-plots.R"))
 # Regular source this script because it's not called by a target per se
 # but is necessary for target construction
 # source("code/R/set-study-defaults.R")
@@ -198,6 +203,10 @@ participants <- inject(here::here(!!!path_here_fmri, "participants.tsv")) %>%
 
 
 subtargets_encoding.timecourses_by.run <- list(
+  tar_target(events.timecourse,
+             command = make_condition_timecourse(onsets = events,
+                                                 tr_duration = task_defaults_list$tr_duration,
+                                                 n_trs = task_defaults_list$n_trs_kept)),
   tar_target(name = activations.flynet,
              command = make_encoding_timecourse_matlab(onsets = events,
                                                        path_stim_activations = activations.flynet_raw,
@@ -211,20 +220,6 @@ subtargets_encoding.timecourses_by.run <- list(
                                                        out_path = here::here("ignore", "outputs", sprintf("task-naturalistic_%s_%s_acts-alexnet.csv", subject, run_bids)),
                                                        tr_duration = task_defaults_list$tr_duration,
                                                        run_duration = task_defaults_list$n_trs_kept * task_defaults_list$tr_duration),
-             format = "file"),
-  tar_target(name = activations.flyalexnet,
-             command = {
-               out_path <- here::here("ignore", "outputs", sprintf("task-naturalistic_%s_%s_acts-flyalexnet.csv", subject, run_bids))
-               
-               flynet <- read_csv(activations.flynet, col_names = FALSE)
-               alexnet <- read_csv(activations.alexnet, col_names = FALSE) %>% 
-                 rename_with(\(x) str_replace(x, "X", "Y"))
-               
-               bind_cols(flynet, alexnet) %>% 
-                 write_csv(file = out_path, col_names = FALSE)
-               
-               out_path
-             },
              format = "file"),
   tar_target(name = activations.onoff,
              command = make_encoding_timecourse_matlab(onsets = events,
@@ -259,12 +254,22 @@ subtarget_events_combine <- tar_combine(name = events,
 )
 
 subtargets_encoding.timecourses_combine <- list(
+  tar_combine(name = events.timecourse,
+              targets_fmri_by.run[["events.timecourse"]],
+              command = {
+                bind_rows(!!!.x, .id = "target_name") %>% 
+                  mutate(run_num = as.integer(str_sub(target_name, start = -2L)),
+                         # bc this is eventually going to get bound with self-report data that has it just by video id
+                         video_id = if_else(condition != "fixation",
+                                            paste0(str_sub(condition, start = -7L), ".mp4"),
+                                            condition),
+                         tr_num = as.integer(tr_num + task_defaults_list$n_trs_kept * (run_num-1))) %>% 
+                  select(-run_num, -target_name, -condition)
+              }),
   tar_combine(name = activations.flynet,
               targets_fmri_by.run[["activations.flynet"]]),
   tar_combine(name = activations.alexnet,
               targets_fmri_by.run[["activations.alexnet"]]),
-  tar_combine(name = activations.flyalexnet,
-              targets_fmri_by.run[["activations.flyalexnet"]]),
   tar_combine(name = activations.onoff,
               targets_fmri_by.run[["activations.onoff"]])
 )
@@ -369,9 +374,6 @@ subtargets_fmri_across.subject <- list(
   tar_combine(name = activations.alexnet_all.subs,
               targets_fmri_by.subject[["activations.alexnet"]],
               command = list(!!!.x)),
-  tar_combine(name = activations.flyalexnet_all.subs,
-              targets_fmri_by.subject[["activations.flyalexnet"]],
-              command = list(!!!.x)),
   tar_combine(name = activations.onoff_all.subs,
               targets_fmri_by.subject[["activations.onoff"]],
               command = list(!!!.x)),
@@ -385,7 +387,36 @@ subtargets_fmri_across.subject <- list(
   tar_combine(name = bold.masked.sc_all.subs,
               targets_fmri_by.subject[["bold.masked.sc"]]),
   tar_combine(name = bold.masked.amyg_all.subs,
-              targets_fmri_by.subject[["bold.masked.amyg"]])
+              targets_fmri_by.subject[["bold.masked.amyg"]]),
+  tar_combine(name = events.timecourse_all.subs,
+              targets_fmri_by.subject[["events.timecourse"]],
+              command = bind_rows(!!!.x, .id = "target_name") %>% 
+                mutate(subj_num = as.integer(str_sub(target_name, start = -4L))) %>% 
+                select(-target_name) %>% 
+                nest(events = -subj_num) %>% 
+                mutate(fold_num = 1:n()) %>% 
+                unnest(events)
+              ),
+  tar_target(events.timecourse.endspike_all.subs,
+             command = events.timecourse_all.subs %>% 
+               nest(events = -c(subj_num, fold_num)) %>% 
+               mutate(events = map(events, \(x) relabel_timecourse_endspike(x))) %>% 
+               unnest(events)),
+  # 2025-02-18: just for right now make these subcortical only to make them smaller :')
+  tar_combine(name = rdm.endspike_all.subs_subcort,
+              targets_fmri_by.subject[["rdm.endspike"]],
+              command = bind_rows(!!!.x, .id = "target_name") %>% 
+                filter(roi %in% c("Bstem_SC", "Amygdala")) %>% 
+                mutate(subj_num = as.integer(str_sub(target_name, start = -4L)),
+                       mutate(across(starts_with("condition"), \(x) paste0(str_sub(x, start = -7L), ".mp4")))) %>% 
+                filter(condition_row != condition_col) %>% 
+                select(-target_name)),
+  tar_combine(name = rdm.boxcar_all.subs_subcort,
+              targets_fmri_by.subject[["rdm.boxcar"]],
+              command = bind_rows(!!!.x, .id = "target_name") %>% 
+                filter(roi %in% c("Bstem_SC", "Amygdala")) %>% 
+                mutate(subj_num = as.integer(str_sub(target_name, start = -4L))) %>% 
+                select(-target_name))
 )
 
 ### canlabtools-based group analyses so help me god ----
@@ -395,15 +426,28 @@ these_rois <- tibble(roi_name = c("amyg", "sc"),
                      roi_canlabtools = c("Amyg", "Bstem_SC"))
 
 subtargets_fmri_canlabtools_by.model <- tar_map(
-  values = tibble(encoding_type = c("flynet", "alexnet", "flyalexnet", "onoff")) %>% 
-    mutate(activations_all.subs = syms(sprintf("activations.%s_all.subs", encoding_type))),
+  values = tribble(~encoding_type1, ~encoding_type2,
+                   "flynet", "only",
+                   "alexnet", "only",
+                   "flynet", "alexnet",
+                   "onoff", "only",
+                   "flynet", "onoff",
+                   "alexnet", "onoff") %>% 
+    mutate(encoding_type_full = paste(encoding_type1, encoding_type2, sep = "."),
+           activations1_all.subs = syms(sprintf("activations.%s_all.subs", encoding_type1)),
+           activations2_all.subs = syms(sprintf("activations.%s_all.subs", encoding_type2)),
+           activations2_all.subs = map_if(activations2_all.subs, 
+                                          encoding_type2 == "only",
+                                          \(x) NA)),
   tar_target(name = encoding.xval,
-             command = canlabtools_fit_encoding_pls(out_path_perf = here::here("ignore", "outputs", sprintf("naturalistic_perf.%s_%s.csv", encoding_type, roi_name)),
-                                                    out_path_pred = here::here("ignore", "outputs", sprintf("naturalistic_pred.%s_%s.csv", encoding_type, roi_name)),
+             command = canlabtools_fit_encoding_pls(out_path_perf = here::here("ignore", "outputs", sprintf("naturalistic_perf.%s_%s.csv", encoding_type_full, roi_name)),
+                                                    out_path_pred = here::here("ignore", "outputs", sprintf("naturalistic_pred.%s_%s.csv", encoding_type_full, roi_name)),
+                                                    out_path_betas = here::here("ignore", "outputs", sprintf("naturalistic_betas.%s_%s.csv", encoding_type_full, roi_name)),
                                                     tr_duration = task_defaults_list$tr_duration,
                                                     bolds = bolds_all.subs,
-                                                    # back to one encoding model at a time
-                                                    activations = activations_all.subs,
+                                                    # by default fits one encoding model at a time
+                                                    activations1 = activations1_all.subs,
+                                                    activations2 = activations2_all.subs,
                                                     # important to do it as a list so they'll go into separate cells
                                                     # and also in the same alphabetical order as the out filenames!
                                                     script = matlab_fit_pls),
@@ -413,67 +457,181 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
   tar_target(name = pred.encoding.xval,
              command = encoding.xval[grepl("pred", encoding.xval)],
              format = "file"),
-  tar_target(name = statmap.encoding,
+  tar_target(name = betas.encoding.xval,
+             command = encoding.xval[grepl("betas", encoding.xval)],
+             format = "file"),
+  tar_target(name = statmap.perf.encoding,
              command = {
-               tvals <- perf.encoding.xval %>% 
-                 # get the cross-validated t-value for each voxel as the independent mean/SE over HELD-OUT SUBJECTS
-                 summarize(across(everything(), 
-                                  \(x) mean(x) / (sd(x)/sqrt(length(x))) )) %>% 
-                 # convert the 1-row dataframe to a vector. the voxel values should stay in the same order
-                 as.numeric() %>% 
-                 # round so that sending these to matlab through the command line won't be too long
-                 round(digits = 3)
-               
-               canlabtools_export_statmap(out_path = out_path,
+               # canlabtools fmri_data write method appears to forcibly change periods in file names to underscores
+               # so we have to feed in something that won't get changed so that the actual output path matches the expected one from here
+               this_encoding_label <- str_replace(encoding_type_full, "\\.", "_")
+               canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_perf_%s_%s.nii", this_encoding_label, roi_name)),
                                           roi = roi_canlabtools,
-                                          values = tvals,
+                                          values = summarize_tvals_pre_statmap(perf.encoding.xval),
                                           script = matlab_export_statmap)
              },
              format = "file"),
+  tar_target(name = encoding.selfreport.xval_time,
+             command = pred.encoding.xval %>% 
+               get_ratings_by_encoding_time(left_join(events.timecourse.endspike_all.subs,
+                                                      beh, 
+                                                      by = c("subj_num", "video_id"))) %>% 
+               fit_pls_xval(x_prefix = "tr",
+                            num_comp = 3)
+  ),
+  tar_target(name = encoding.selfreport.xval_space,
+             command = pred.encoding.xval %>% 
+               get_ratings_by_encoding_space(left_join(events.timecourse.endspike_all.subs,
+                                                       beh, 
+                                                       by = c("subj_num", "video_id"))) %>% 
+               fit_pls_xval(x_prefix = "tr",
+                            num_comp = 3)
+  ),
+  # this one is THIRSTY FOR MEMORY bc it requires all subjects' whole brain full timecourses. 172 GB seems to work with 29 subjects
   tar_target(name = wb.model.connectivity,
-             command = canlabtools_fit_model_connectivity(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb.conn.%s_%s.csv", encoding_type, roi_name)),
+             command = canlabtools_fit_model_connectivity(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb.conn.%s_%s.csv", encoding_type_full, roi_name)),
                                                           tr_duration = task_defaults_list$tr_duration,
                                                           trs_to_use = 1:task_defaults_list$n_trs_kept + (task_defaults_list$disdaq_duration %/% task_defaults_list$tr_duration),
-                                                          bolds = bold.smoothed,
-                                                          confounds = confounds.prespm,
+                                                          bolds = bold.smoothed_all.subs,
+                                                          confounds = confounds.prespm_all.subs,
                                                           pred.encoding.roi = pred.encoding.xval,
                                                           script = matlab_fit_model_connectivity),
              format = "file"),
-  names = encoding_type
+  tar_target(name = statmap.wb.model.connectivity,
+             command = {
+               connectivity <- vroom::vroom(wb.model.connectivity, delim = ",", col_names = FALSE, col_types = c(.default = "d"))
+               # canlabtools fmri_data write method appears to forcibly change periods in file names to underscores
+               # so we have to feed in something that won't get changed so that the actual output path matches the expected one from here
+               this_encoding_label <- str_replace(encoding_type_full, "\\.", "_")
+               canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb_conn_%s_%s.nii", this_encoding_label, roi_name)),
+                                          roi = NULL,
+                                          values = summarize_tvals_pre_statmap(perf.encoding.xval),
+                                          script = matlab_export_statmap)
+             },
+             format = "file"),
+  names = encoding_type_full
 )
 
 subtargets_fmri_canlabtools_by.roi <- tar_map(
   values = these_rois %>% 
     mutate(bolds_all.subs = syms(sprintf("bold.masked.%s_all.subs", roi_name))),
   subtargets_fmri_canlabtools_by.model,
-  tar_combine(name = pred.encoding.xval,
-              subtargets_fmri_canlabtools_by.model[["pred.encoding.xval"]],
+  # this combined target is up here because it doesn't depend on any of the semi-recursive model comparison ones
+  tar_combine(name = betas.encoding.xval,
+              subtargets_fmri_canlabtools_by.model[["betas.encoding.xval"]],
               command = {
                 vctrs::vec_c(!!!.x) %>% 
-                  map(\(x) read_csv(x, col_names = FALSE)) %>% 
+                  map(\(x) read_csv(x, col_names = FALSE) %>% 
+                        # OMIT the intercept from the PLS
+                        slice(-1)) %>% 
                   bind_rows(.id = "target_name") %>% 
+                  rename(fold_num = X1) %>% 
                   mutate(encoding_type = str_split_i(target_name, "_", -1L)) %>% 
                   select(-target_name)
               }),
   names = roi_name
 )
 
+# I don't think these can be tar_mapped more cleanly because they depend on betas and stuff from the base encoding models
+subtargets_fmri_canlabtools_compare.models <- tar_map(
+  values = these_rois %>% 
+    mutate(bolds_all.subs = syms(sprintf("bold.masked.%s_all.subs", roi_name)),
+           betas.flynet.onoff = syms(sprintf("betas.encoding.xval_flynet.onoff_%s", roi_name)),
+           betas.alexnet.onoff = syms(sprintf("betas.encoding.xval_alexnet.onoff_%s", roi_name)),
+           betas.flynet.alexnet = syms(sprintf("betas.encoding.xval_flynet.alexnet_%s", roi_name)),
+           preds.flynet = syms(sprintf("pred.encoding.xval_flynet.only_%s", roi_name)),
+           preds.alexnet = syms(sprintf("pred.encoding.xval_alexnet.only_%s", roi_name))),
+  #### performance from joint encoding models with one set of activations knocked out ----
+  tar_target(name = encoding.xval_flynet.minus.onoff,
+             command = canlabtools_pred_encoding_pls(out_path_perf = here::here("ignore", "outputs", sprintf("naturalistic_perf.flynet.minus.onoff_%s.csv", roi_name)),
+                                                     out_path_pred = here::here("ignore", "outputs", sprintf("naturalistic_pred.flynet.minus.onoff_%s.csv", roi_name)),
+                                                     tr_duration = task_defaults_list$tr_duration,
+                                                     bolds = bolds_all.subs,
+                                                     activations1 = activations.flynet_all.subs,
+                                                     betas = betas.flynet.onoff,
+                                                     script = matlab_pred_pls),
+             format = "file"),
+  tar_target(name = encoding.xval_alexnet.minus.onoff,
+             command = canlabtools_pred_encoding_pls(out_path_perf = here::here("ignore", "outputs", sprintf("naturalistic_perf.alexnet.minus.onoff_%s.csv", roi_name)),
+                                                     out_path_pred = here::here("ignore", "outputs", sprintf("naturalistic_pred.alexnet.minus.onoff_%s.csv", roi_name)),
+                                                     tr_duration = task_defaults_list$tr_duration,
+                                                     bolds = bolds_all.subs,
+                                                     activations1 = activations.alexnet_all.subs,
+                                                     betas = betas.alexnet.onoff,
+                                                     script = matlab_pred_pls),
+             format = "file"),
+  tar_target(name = perf.encoding.xval_flynet.minus.onoff,
+             command = encoding.xval_flynet.minus.onoff %>% 
+               .[grepl("perf", .)] %>% 
+               read_csv(col_names = FALSE)),
+  tar_target(name = pred.encoding.xval_flynet.minus.onoff,
+             command = encoding.xval_flynet.minus.onoff %>% .[grepl("pred", .)],
+             format = "file"),
+  tar_target(name = perf.encoding.xval_alexnet.minus.onoff,
+             command = encoding.xval_alexnet.minus.onoff %>% 
+               .[grepl("perf", .)] %>% 
+               read_csv(col_names = FALSE)),
+  tar_target(name = pred.encoding.xval_alexnet.minus.onoff,
+             command = encoding.xval_alexnet.minus.onoff %>% .[grepl("pred", .)],
+             format = "file"),
+  names = roi_name
+)
+
+#### other downstream-of-canlabtools-encoding targets ----
 subtargets_fmri_canlabtools_combined <- list(
   tar_combine(name = perf.encoding_combined,
-              tar_select_targets(subtargets_fmri_canlabtools_by.roi, starts_with("perf.encoding.xval")),
+              tar_select_targets(c(subtargets_fmri_canlabtools_by.roi,
+                                   subtargets_fmri_canlabtools_compare.models), 
+                                 starts_with("perf.encoding.xval")),
               command = {
-                vctrs::vec_c(!!!.x) %>% 
+                list(!!!.x) %>% 
                   # must average across voxels to consider data across ROIs
                   # but retain xval folds
-                  map(\(x) read_csv(x, col_names = FALSE) %>% 
+                  map(\(x) x %>% 
                         rowwise() %>% 
                         mutate(perf = mean(c_across(everything()))) %>% 
                         ungroup() %>% 
                         mutate(fold_num = 1:n()) %>% 
                         select(fold_num, perf)) %>% 
                   bind_rows(.id = "target_name") %>% 
-                  separate_wider_delim(cols = target_name, delim = "_", names = c(NA, "roi", "encoding_type"))
-              })
+                  separate_wider_delim(cols = target_name, delim = "_", names = c(NA, "encoding_type", "roi"))
+              }),
+  tar_combine(name = pred.encoding.xval_sc,
+              tar_select_targets(c(subtargets_fmri_canlabtools_by.roi,
+                                   subtargets_fmri_canlabtools_compare.models), 
+                                 starts_with("pred.encoding.xval") & ends_with("sc")),
+              command = {
+                vctrs::vec_c(!!!.x) %>% 
+                  map(\(x) load_encoding_pred_allsubs(x)) %>% 
+                  bind_rows(.id = "target_name") %>% 
+                  mutate(encoding_type = str_split_i(target_name, "_", -2L)) %>% 
+                  select(-target_name)
+              }),
+  tar_combine(name = pred.encoding.xval_amyg,
+              tar_select_targets(c(subtargets_fmri_canlabtools_by.roi,
+                                   subtargets_fmri_canlabtools_compare.models), 
+                                 starts_with("pred.encoding.xval") & ends_with("amyg")),
+              command = {
+                vctrs::vec_c(!!!.x) %>% 
+                  map(\(x) load_encoding_pred_allsubs(x)) %>% 
+                  bind_rows(.id = "target_name") %>% 
+                  mutate(encoding_type = str_split_i(target_name, "_", -2L)) %>% 
+                  select(-target_name)
+              }),
+  tar_target(name = pcor.encoding_flynet.alexnet_sc,
+             command = calc_pcor_encoding_on_bold(bold.masked.sc_all.subs,
+                                                  pred.encoding.xval_flynet.only_sc,
+                                                  pred.encoding.xval_alexnet.only_sc,
+                                                  "flynet",
+                                                  "alexnet")
+  ),
+  tar_target(name = pcor.encoding_flynet.alexnet_amyg,
+             command = calc_pcor_encoding_on_bold(bold.masked.amyg_all.subs,
+                                                  pred.encoding.xval_flynet.only_amyg,
+                                                  pred.encoding.xval_alexnet.only_amyg,
+                                                  "flynet",
+                                                  "alexnet")
+  )
 )
 
 targets_fmri_across.subject <- make_targets_fmri_across.subject(targets_fmri_by.subject,
@@ -481,6 +639,7 @@ targets_fmri_across.subject <- make_targets_fmri_across.subject(targets_fmri_by.
                                                                 task = "naturalistic",
                                                                 additional_targets = c(subtargets_fmri_across.subject,
                                                                                        subtargets_fmri_canlabtools_by.roi,
+                                                                                       subtargets_fmri_canlabtools_compare.models,
                                                                                        subtargets_fmri_canlabtools_combined))
 
 ## targets: splitting by parcel ROI (for whole-brainy analyses) ----
@@ -554,21 +713,29 @@ if (FALSE) {
 
 targets_beh <- list(
   tar_files(name = beh.raw,
-            # note! this does not use the subjects from participants.tsv
-            # but instead will return every file uploaded to beh that matches the pattern
-            # so may include some subjects who are not yet fmriprepped
-            command = list.files(here::here("ignore", "data", "beh"),
+            # now filters for files belonging to subjects marked as usable in participants.tsv
+            command = {
+              all_files <- list.files(here::here("ignore", "data", "beh"),
                                  pattern = "task-naturalistic_beh", 
                                  full.names = TRUE, 
-                                 recursive = TRUE)),
+                                 recursive = TRUE)
+              
+              all_subjects <- str_split_i(all_files, "/", 9)
+              all_files[all_subjects %in% participants$subject]
+              }),
   # these two targets map over every beh.raw file so you will need to filter for kept subjects later
   tar_target(name = beh,
              command = beh.raw %>% 
                read_csv() %>% 
                select(subj_num = participant, video_id, has_loom, animal_type, ends_with("rating")) %>% 
+               # turn the suffix into a prefix
+               rename_with(\(x) str_split_i(x, "_", 1) %>% 
+                             paste0("rating_", .),
+                           ends_with("rating")) %>% 
                mutate(subj_num = as.integer(subj_num)) %>% 
                filter(!is.na(video_id)),
              pattern = map(beh.raw)),
+  # 2025-02-21: currently returning whole tidy RDM (not halved in case you want to reorder when plotting, like with hclust)
   tar_target(name = rdm.beh,
              command = beh %>% 
                select(-has_loom, -animal_type) %>% 
@@ -582,9 +749,7 @@ targets_beh <- list(
                               arousal2 = arousal_rating, 
                               fear2 = fear_rating)) %>% 
                filter(video1 != video2) %>% 
-               mutate(video_sort = map2_chr(video1, video2, \(x, y) paste(sort(c(x, y)), collapse = " "))) %>% 
-               distinct(video_sort, .keep_all = TRUE) %>% 
-               select(-video_sort) %>% 
+               # halve_tidy_rdm(row_col = video1, col_col = video2) %>% 
                mutate(diff_pleasantness = abs(pleasantness1 - pleasantness2),
                       diff_arousal = abs(arousal1 - arousal2),
                       diff_fear = abs(fear1 - fear2)) %>% 
@@ -657,37 +822,43 @@ targets_beh_old <- list(
 )
 
 ## targets: plots for showing ----
+
+this_theme <- theme_bw(base_size = 16) +
+  theme(plot.background = element_blank(),
+        legend.background = element_blank())
+
 targets_plots <- list(
-  tar_target(
-    plot_ratings,
-    command = {
-      preplot <- beh %>% 
-        mutate(has_loom = if_else(has_loom == 1, "Looming", "No looming"),
-               animal_type = fct_relevel(animal_type, "food", "dog", "cat")) %>% 
-        pivot_longer(cols = ends_with("rating"), names_to = "construct", values_to = "rating") %>% 
-        mutate(construct = str_remove(construct, "_rating"),
-               construct = if_else(construct == "pleasantness", "valence (- to +)", construct),
-               construct = fct_relevel(construct, "valence (- to +)")) %>% 
-        filter(animal_type != "food")
-      
-      preplot %>% 
-        ggplot(aes(x = animal_type, y = rating, color = factor(has_loom))) +
-        geom_jitter(alpha = 0.1) +
-        geom_pointrange(data = preplot %>% 
-                          # so that the SE will be calculated by subject and not by trial
-                          group_by(subj_num, animal_type, has_loom, construct) %>% 
-                          summarize(rating = mean(rating), .groups = "drop"),
-                        stat = "summary", 
-                        fun.data = "mean_se") +
-        labs(x = "Object type",
-             y = "Self-report rating",
-             color = NULL) +
-        facet_wrap(~ construct) +
-        theme_bw(base_size = 16) +
-        theme(plot.background = element_blank(),
-              legend.background = element_blank())
-      }
+  tar_target(plot_ratings,
+             command = plot_selfreport_ratings(beh) +
+                 this_theme
   ),
+  tar_target(plot_schematic_encoding.bold.pred,
+             command = plot_sample_timecourse_encoding(pred.encoding.xval_sc,
+                                                       encoding_models = c("flynet.only",
+                                                                           "alexnet.only",
+                                                                           "onoff.only")) +
+               this_theme +
+               theme(aspect.ratio = 1/3)
+  ),
+  tar_target(plot_schematic_bold,
+             command = plot_sample_timecourse_bold(bold.masked.sc_sub.0001) +
+               this_theme +
+               theme(aspect.ratio = 1/3)
+  ),
+  tar_target(plot_encoding.perf,
+             command = plot_encoding_performance(perf.encoding_combined) +
+               this_theme
+  ),
+  tar_target(plot_encoding.pcor_flynet.alexnet,
+             command = bind_rows(sc = pcor.encoding_flynet.alexnet_sc,
+                                 amyg = pcor.encoding_flynet.alexnet_amyg,
+                                 .id = "roi") %>% 
+               plot_encoding_performance_pcor() +
+               this_theme
+  )
+)
+
+targets_plots.rdm <- list(
   tar_target(
     plot_rdm_subcort,
     command = {
@@ -711,7 +882,7 @@ targets_plots <- list(
                label = if_else(has_loom == 0,
                                paste("non-looming", animal_type),
                                paste("looming", animal_type)))
-    
+      
       preplot %>% 
         mutate(across(starts_with("animal"), \(x) as.integer(factor(x, levels = c("dog", "cat", "frog", "spider", "food")))),
                roi = case_match(roi,
@@ -734,9 +905,9 @@ targets_plots <- list(
                   color = "white",
                   alpha = 0) +
         geom_label(aes(x = xmin, y = xmax, label = label),
-                  data = square_bounds_intxn,
-                  hjust = 0, vjust = 1,
-                  size = 3) +
+                   data = square_bounds_intxn,
+                   hjust = 0, vjust = 1,
+                   size = 3) +
         facet_wrap(~roi) + 
         scale_fill_viridis_c() + 
         labs(x = NULL, y = NULL) +
@@ -772,14 +943,44 @@ targets_plots <- list(
 )
 
 targets_figs <- list(
-  tar_target(
-    fig_ratings,
-    command = ggsave(here::here("ignore", "figs", "ratings_naturalistic.png"),
-                     plot = plot_ratings,
-                     width = 3000,
-                     height = 1200,
-                     units = "px")
-  ),
+  tar_target(fig_ratings,
+             command = ggsave(here::here("ignore", "figs", "naturalistic_ratings.png"),
+                              plot = plot_ratings,
+                              width = 3000,
+                              height = 1200,
+                              units = "px"),
+             format = "file"),
+  tar_target(fig_schematic_encoding.bold.pred,
+             command = ggsave(here::here("ignore", "figs", "naturalistic_schematic_encoding_bold.png"),
+                              plot = plot_schematic_encoding.bold.pred,
+                              width = 2800,
+                              height = 2400,
+                              units = "px"),
+             format = "file"),
+  tar_target(fig_schematic_bold,
+             command = ggsave(here::here("ignore", "figs", "naturalistic_schematic_bold.png"),
+                              plot = plot_schematic_bold,
+                              width = 1500,
+                              height = 800,
+                              units = "px"),
+             format = "file"),
+  tar_target(fig_encoding.perf,
+             command = ggsave(here::here("ignore", "figs", "naturalistic_encoding_perf.png"),
+                              plot = plot_encoding.perf,
+                              width = 3500,
+                              height = 2000,
+                              units = "px"),
+             format = "file"),
+  tar_target(fig_encoding.pcor_flynet.alexnet,
+             command = ggsave(here::here("ignore", "figs", "naturalistic_encoding_pcor_flynet_alexnet.png"),
+                              plot = plot_encoding.pcor_flynet.alexnet,
+                              width = 3000,
+                              height = 2000,
+                              units = "px"),
+             format = "file")
+)
+
+targets_figs.rdm <- list(
   tar_target(
     fig_rdm_subcort,
     command = ggsave(here::here("ignore", "figs", "rdm_subcort_naturalistic.png"),
@@ -806,7 +1007,7 @@ list(
   targets_stimlists,
   targets_encoding.models,
   targets_fmri_across.subject,
-  targets_beh# ,
-  # targets_plots,
-  # targets_figs
+  targets_beh,
+  targets_plots,
+  targets_figs
 )
