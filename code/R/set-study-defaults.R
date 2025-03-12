@@ -14,6 +14,7 @@ path_here_derivatives <- c(path_here_fmri, "derivatives", "fmriprep-23.1.4")
 
 ## Pull scan info stored in nifti headers ----
 # Assume that sub-0001 has the standard study scans!
+print("loading controlled header...")
 hdr_controlled <- inject(here::here(!!!path_here_fmri, "sub-0001", "func", "sub-0001_task-controlled_run-01_bold.nii.gz")) %>% 
   readNifti() %>% 
   niftiHeader()
@@ -22,6 +23,7 @@ n_trs_controlled <- hdr_controlled$dim[5]
   
 tr_duration <- round(hdr_controlled$pixdim[5], digits = 3) # in seconds
 
+print("loading naturalistic header...")
 hdr_naturalistic <- inject(here::here(!!!path_here_fmri, "sub-0001", "func", "sub-0001_task-naturalistic_run-01_bold.nii.gz")) %>% 
   readNifti() %>% 
   niftiHeader()

@@ -84,6 +84,7 @@ make_targets_fmri_by.subject <- function(df_participants, targets_by.run, contra
                 targets_by.run[["events.prespm.endspike"]]),
     tar_combine(name = confounds.prespm,
                 targets_by.run[["confounds.prespm"]]),
+    ### level 1 SPM.mat models ----
     tar_target(name = spm.level1.boxcar,
                # the output file to be tracked is the SPM.mat file
                command = spm_spec_est_level1(model_path = file.path("ignore", "models", task_bids, "acq-mb8", subject, "model-boxcar", "smoothed-4mm"),
@@ -106,16 +107,16 @@ make_targets_fmri_by.subject <- function(df_participants, targets_by.run, contra
                                              confounds_prespm = confounds.prespm,
                                              script = matlab_spmbatch_spec_est_level1),
                format = "file"),
-    ### contrasts by subject for boxcar regressor ----
+    ### readably named contrast targets by subject ----
     # defining contrasts individually (CRY) so that we can keep them accessible through one level of tar_map nesting
     make_contrast_targets_by.subject(spm.level1.endspike, contrast_names, "boxcar"),
-    ### contrasts by subject for endspike regressor ----
     make_contrast_targets_by.subject(spm.level1.endspike, contrast_names, "endspike"),
     additional_targets,
     names = subject
   )
 }
 
+# use tar_target_raw to construct a list of readably named targets for each level 1 contrast
 make_contrast_targets_by.subject <- function (level1, contrast_names, model_type) {
   # use ensym() instead of enquo() because the tar_target_raw defused command 
   # just wants symbol names that will get evaluated at some miraculous point
