@@ -30,10 +30,10 @@ mkdir -p ${BIDS_DIR}/${DERIVS_DIR}
 export SINGULARITYENV_TEMPLATEFLOW_HOME="/templateflow"
 SINGULARITY_CMD="singularity run --cleanenv --bind ${BIDS_DIR}:/data --bind /home/data/shared/SingularityImages/:/fslicensepath --bind ${TEMPLATEFLOW_HOST_HOME}:${SINGULARITYENV_TEMPLATEFLOW_HOME}  --bind ${STUDY_DIR}/ignore/tmp:/work  /home/data/shared/SingularityImages/fmriprep-23.1.4.simg"
 
-echo Current slurm array task ID: $SLURM_ARRAY_TASK_ID
+# echo Current slurm array task ID: $SLURM_ARRAY_TASK_ID
 # Parse the participants.tsv file and extract one subject ID from the line corresponding to this SLURM task.
-subject=$( sed -n -E "$((${SLURM_ARRAY_TASK_ID} + 1))s/sub-(\S*)\>.*/\1/gp" ${BIDS_DIR}/participants.tsv )
-
+# subject=$( sed -n -E "$((${SLURM_ARRAY_TASK_ID} + 1))s/sub-(\S*)\>.*/\1/gp" ${BIDS_DIR}/participants.tsv )
+printf -v subject "sub-%04d" $SLURM_ARRAY_TASK_ID
 echo Running for subject: $subject
 # Remove IsRunning files from FreeSurfer
 # find ${BIDS_DIR}/derivatives/freesurfer-6.0.1/sub-$subject/ -name "*IsRunning*" -type f -delete

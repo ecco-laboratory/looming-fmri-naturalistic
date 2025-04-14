@@ -1,5 +1,9 @@
 #!/bin/bash
-# TODO: decide whether you are going to use a standard heuristic file or a new one for each sub like CVA
+# This study uses a single heuristic file that should be consistent across all subjects
+# because they all get scanned with the exact same sequence
+# This also only runs in an interactive bash instance, not in slurm
+# Monica tried setting it up to run through slurm and it appeared to convert the data okay
+# but then didn't update the participants.tsv file with the finished subjects??
 
 read -p "Enter subj num(s) to heuristic with no leading 0s (but with spaces): " SUBJ_NUMS
 
