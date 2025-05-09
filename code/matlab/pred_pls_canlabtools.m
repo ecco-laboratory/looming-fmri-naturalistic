@@ -69,7 +69,12 @@ bold_masked_allsubjs = zeros(n_subjs*bold_height, width(bold.DATA));
 subj_indices = zeros(n_subjs*bold_height, 1);
 this_subj_indices = 1:bold_height;
 bold_masked_allsubjs(this_subj_indices, :) = bold.DATA;
-subj_indices(this_subj_indices, 1) = 1;
+
+subj_nums = [];
+[~, file_masked, ~] = fileparts(paths_masked{1});
+this_subj_num = str2double(extractBetween(convertCharsToStrings(file_masked), 5, 8));
+subj_indices(this_subj_indices, 1) = this_subj_num;
+subj_nums = [subj_nums, this_subj_num];
 
 % loop over the rest of the subjects
 for i=2:n_subjs
@@ -78,7 +83,10 @@ for i=2:n_subjs
     % whatever. I doubt failure
     this_subj_indices = (1:bold_height) + (bold_height * (i-1));
     bold_masked_allsubjs(this_subj_indices, :) = bold.DATA;
-    subj_indices(this_subj_indices, 1) = i;
+    [~, file_masked, ~] = fileparts(paths_masked{i});
+    this_subj_num = str2double(extractBetween(convertCharsToStrings(file_masked), 5, 8));
+    subj_indices(this_subj_indices, 1) = this_subj_num;
+    subj_nums = [subj_nums, this_subj_num];
     
 end
 clear bold this_subj_indices
@@ -97,11 +105,11 @@ fprintf('Current held-out subject:           ')
 for k=1:n_subjs
     fprintf('\b\b\b\b\b\b\b\b\b\b%03d of %03d', k, n_subjs)
     % for everything with timecourse data. the betas have their own subj indices
-    test_idx = subj_indices==k;
+    test_idx = subj_indices==subj_nums(k);
 
     % only need to calc yhat here because the betas have already been fit :3
     % again! one of the input encoding models' columns have been zeroed out
-    yhat(test_idx,:) = [ones(height(activations(test_idx,:)), 1), activations(test_idx,:)] * betas(beta_subj_indices==k, :);
+    yhat(test_idx,:) = [ones(height(activations(test_idx,:)), 1), activations(test_idx,:)] * betas(beta_subj_indices==subj_nums(k), :);
     
     % has to be like this bc corr(X, Y) correlates each pair of columns (here, voxels)
     % but we only care about correlating each voxel's real data to its own predicted data
