@@ -28,11 +28,20 @@ canlabtools_fit_model_connectivity <- function (out_path,
 canlabtools_export_statmap <- function (out_path,
                                         roi,
                                         values,
+                                        threshold_t = NULL,
+                                        threshold_p = NULL,
                                         script = matlab_export_statmap) {
+  # if both are provided, use threshold_p
+  if (!is.null(threshold_p)) {
+    values <- threshold_tvals_pre_statmap(values, threshold_p = threshold_p)
+    
+  } else if (!is.null(threshold_t)) {
+    values <- threshold_tvals_pre_statmap(values, threshold_t = threshold_t)
+  }
+  
   matlab_commands = c(
     assign_variable("out_path", out_path),
-    rvec_to_matlab(values, matname = "zs"),
-    call_script(script)
+    rvec_to_matlab(values, matname = "zs")
   )
   
   if (!is.null(roi)) {
