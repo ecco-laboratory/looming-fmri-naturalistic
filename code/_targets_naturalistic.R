@@ -15,13 +15,14 @@ tar_option_set(
                "matlabr",
                "tidymodels",
                "plsmod",
+               "discrim",
                "tidyverse",
                "magrittr",
                "glue",
                "rlang",
                "qualtRics"), # packages that your targets need to run
   controller = crew.cluster::crew_controller_slurm(
-    workers = 12,
+    workers = 16,
     seconds_idle = 30,
     options_cluster = crew.cluster::crew_options_slurm(
       verbose = TRUE,
@@ -73,6 +74,10 @@ source("code/R/define-targets-scripts.R")
 ## targets: looming stimuli of various kinds ----
 
 folder_videos <- here::here("ignore", "stimuli", "videos", "naturalistic")
+# just the video IDs for the rotting food videos
+# since they aren't otherwise tagged (none of the food looms!)
+# any food videos with other video IDs are tasty
+gross_food <- sprintf("%04d_01.mp4", 49:58)
 
 targets_stimuli <- list(
   # this will really only be used to generate placeholder activations
@@ -191,6 +196,31 @@ targets_encoding.models <- list(
              format = "file")
 )
 
+# targets: MRIQC type stuff across all subjects, not just manually included ----
+
+# use dynamic branching here instead of static branching because we just want every available fmriprepped confounds file
+# not just those for a pre-set group of subjects whose targets need to be named
+# this won't tell us which subjects are in there, mind you!
+# but it _should_ update itself if new files appear that match the list.files pattern
+targets_qc <- list(
+  tar_files(name = confounds_allsubs,
+            command = get_all_raw_confounds(task = "naturalistic")),
+  tar_target(name = signal_quality,
+             command = get_labeled_noise_measures_by_subject(confounds_allsubs,
+                                                             tr_duration = task_defaults_list$tr_duration,
+                                                             disdaq_duration = task_defaults_list$disdaq_duration),
+             pattern = map(confounds_allsubs)),
+  tar_target(name = signal_quality_summary,
+             command = signal_quality %>% 
+               group_by(subj_num, run_num) %>% 
+               # greater than half a voxel
+               summarize(n_spikes = sum(framewise_displacement > 1.35)) %>% 
+               summarize(n_spike_runs = sum(n_spikes > 0), n_spikes_total = sum(n_spikes)) %>% 
+               # 2025-04-07: EXCLUDE SUBJECTS WHO HAVE A SPIKE IN ALL THREE RUNS
+               # if you look, those subjects are also the ones who are moving a fuckton
+               arrange(desc(n_spike_runs)))
+)
+
 # targets: maps out by subject x run ----
 
 # Use the participants.tsv file as a code-agnostic way of tracking which subjects to use
@@ -201,12 +231,15 @@ participants <- inject(here::here(!!!path_here_fmri, "participants.tsv")) %>%
   filter(group == "use") %>% 
   select(subject = participant_id)
 
-
+# TODO 2025-04-03: can we decode object category directly from AlexNet activations? which category units activate in response to the different stimuli?
 subtargets_encoding.timecourses_by.run <- list(
+  # 2025-04-04: Phil wants to be able to look at these so output them to CSV instead
   tar_target(events.timecourse,
              command = make_condition_timecourse(onsets = events,
+                                                 out_path = here::here("ignore", "outputs", sprintf("task-naturalistic_%s_%s_events.csv", subject, run_bids)),
                                                  tr_duration = task_defaults_list$tr_duration,
-                                                 n_trs = task_defaults_list$n_trs_kept)),
+                                                 n_trs = task_defaults_list$n_trs_kept),
+             format = "file"),
   tar_target(name = activations.flynet,
              command = make_encoding_timecourse_matlab(onsets = events,
                                                        path_stim_activations = activations.flynet_raw,
@@ -254,10 +287,13 @@ subtarget_events_combine <- tar_combine(name = events,
 )
 
 subtargets_encoding.timecourses_combine <- list(
+  # 2025-04-04: the source is now output to CSV so this tar_combine needs to read_csv
   tar_combine(name = events.timecourse,
               targets_fmri_by.run[["events.timecourse"]],
               command = {
-                bind_rows(!!!.x, .id = "target_name") %>% 
+                vctrs::vec_c(!!!.x) %>% 
+                map(\(x) read_csv(x)) %>% 
+                bind_rows(.id = "target_name") %>% 
                   mutate(run_num = as.integer(str_sub(target_name, start = -2L)),
                          # bc this is eventually going to get bound with self-report data that has it just by video id
                          video_id = if_else(condition != "fixation",
@@ -402,11 +438,18 @@ subtargets_fmri_across.subject <- list(
                nest(events = -c(subj_num, fold_num)) %>% 
                mutate(events = map(events, \(x) relabel_timecourse_endspike(x))) %>% 
                unnest(events)),
+  tar_target(events.timecourse.boxcartail_all.subs,
+             command = events.timecourse_all.subs %>% 
+               nest(events = -c(subj_num, fold_num)) %>% 
+               mutate(events = map(events, \(x) relabel_timecourse_boxcartail(x))) %>% 
+               unnest(events)),
   # 2025-02-18: just for right now make these subcortical only to make them smaller :')
+  # 2025-04-03: Phil suggests making RDMs condensed from trialwise to category-wise (either object or object x looming) and looking at classification confusions/clustering them
   tar_combine(name = rdm.endspike_all.subs_subcort,
               targets_fmri_by.subject[["rdm.endspike"]],
-              command = bind_rows(!!!.x, .id = "target_name") %>% 
-                filter(roi %in% c("Bstem_SC", "Amygdala")) %>% 
+              command = list(!!!.x) %>% 
+                map(\(x) filter(x, roi == "Bstem_SC")) %>% 
+                bind_rows(.id = "target_name") %>% 
                 mutate(subj_num = as.integer(str_sub(target_name, start = -4L)),
                        mutate(across(starts_with("condition"), \(x) paste0(str_sub(x, start = -7L), ".mp4")))) %>% 
                 filter(condition_row != condition_col) %>% 
@@ -424,6 +467,26 @@ subtargets_fmri_across.subject <- list(
 # across-subjects targets, but tar_mapped by ROI
 these_rois <- tibble(roi_name = c("amyg", "sc"),
                      roi_canlabtools = c("Amyg", "Bstem_SC"))
+
+subtargets_fmri_canlabtools_by.subject <- tar_map(
+  values = participants %>% 
+    mutate(bolds = sprintf("bold.smoothed_%s", subject),
+           confounds = sprintf("confounds.prespm_%s", subject),
+           across(c(bolds, confounds), \(x) syms(str_replace_all(x, "-", "\\.")))),
+  # model-based connectivity is set up with single-subject targets to start
+  # that depend on the all-subjects pred.encoding.xval target
+  # to reduce memory load so that only one subject's whole-brain BOLD needs to be loaded in at a time to calculate the correlations
+  tar_target(name = wb.model.connectivity,
+             command = canlabtools_fit_model_connectivity(out_path = here::here("ignore", "outputs", sprintf("%s_naturalistic_wb.conn.%s_%s.csv", subject, encoding_type_full, roi_name)),
+                                                          tr_duration = task_defaults_list$tr_duration,
+                                                          trs_to_use = 1:task_defaults_list$n_trs_kept + (task_defaults_list$disdaq_duration %/% task_defaults_list$tr_duration),
+                                                          bolds = bolds,
+                                                          confounds = confounds,
+                                                          pred.encoding.roi = pred.encoding.xval,
+                                                          script = matlab_fit_model_connectivity),
+             format = "file"),
+  names = subject
+)
 
 subtargets_fmri_canlabtools_by.model <- tar_map(
   values = tribble(~encoding_type1, ~encoding_type2,
@@ -457,6 +520,7 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
   tar_target(name = pred.encoding.xval,
              command = encoding.xval[grepl("pred", encoding.xval)],
              format = "file"),
+  # TODO 2025-04-03: 1. Look at which AlexNet units are 
   tar_target(name = betas.encoding.xval,
              command = encoding.xval[grepl("betas", encoding.xval)],
              format = "file"),
@@ -471,41 +535,126 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
                                           script = matlab_export_statmap)
              },
              format = "file"),
-  tar_target(name = encoding.selfreport.xval_time,
-             command = pred.encoding.xval %>% 
-               get_ratings_by_encoding_time(left_join(events.timecourse.endspike_all.subs,
-                                                      beh, 
-                                                      by = c("subj_num", "video_id"))) %>% 
-               fit_pls_xval(x_prefix = "tr",
-                            num_comp = 3)
+  tar_map(
+    values = crossing(events_type = c("events.raw", "events.endspike", "events.boxcartail"),
+                      n_categories = c("2cat", "5cat", "8cat")) %>% 
+      mutate(events_label = case_match(events_type, "events.raw" ~ "", "events.endspike" ~ ".endspike", "events.boxcartail" ~ ".boxcartail"),
+             outcome_category = case_match(n_categories, "2cat" ~ "looming", "5cat" ~ "object", "8cat" ~ "object_looming"),
+             events_target = syms(sprintf("events.timecourse%s_all.subs", events_label))),
+    tar_target(name = encoding.object,
+               command = pred.encoding.xval %>%
+                 fit_object_by_pattern(events_allsubs = left_join(events_target,
+                                                                  beh, 
+                                                                  by = c("subj_num", "video_id")),
+                                       n_trs_kept_per_run = task_defaults_list$n_trs_kept,
+                                       pattern_type = "encoding",
+                                       outcome_categories = outcome_category,
+                                       n_pls_comp = 20)
+    ),
+    tar_rep(name = perm.acc_encoding.object,
+            command = encoding.object %>% 
+              select(preds) %>% 
+              unnest(preds) %>% 
+              permute_acc_object_by_pattern(n_perms = 100, 
+                                            outcome_categories = outcome_category),
+            batches = 10,
+            reps = 1
+    ),
+    tar_rep(name = perm.acc_by.object_encoding.object,
+            command = encoding.object %>% 
+              select(preds) %>% 
+              unnest(preds) %>% 
+              permute_acc_object_by_pattern(n_perms = 100, 
+                                            outcome_categories = outcome_category,
+                                            acc_grouping_cols = animal_type),
+            batches = 10,
+            reps = 1
+    ),
+    names = c(n_categories, events_type)
   ),
-  tar_target(name = encoding.selfreport.xval_space,
+  tar_target(name = encoding.loom_space,
+             command = pred.encoding.xval %>% 
+               join_beh_to_encoding_trwise(left_join(events.timecourse.endspike_all.subs,
+                                                     beh, 
+                                                     by = c("subj_num", "video_id"))) %>% 
+               select(-starts_with("rating")) %>% 
+               # reconstruct run number here for later block permutation by run
+               mutate(run_num = (tr_num-1) %/% task_defaults_list$n_trs_kept) %>% 
+               # PHIL HAD SET UP HIS PRELIMINARY ANALYSIS TO EXCLUDE FIXATION TIMEPOINTS
+               filter(!is.na(animal_type)) %>% 
+               fit_model_xval(x_prefix = "voxel",
+                              y_prefix = "has_loom",
+                              parsnip_model = set_engine(parsnip::pls(mode = "regression", num_comp = 1), engine = "plsr", method = "simpls"),
+                              rm_x = TRUE) %>% 
+               # the object is too large to save out if we keep all the model fits
+               select(preds) %>% 
+               unnest(preds)
+  ),
+  tar_target(name = encoding.selfreport,
              command = pred.encoding.xval %>% 
                get_ratings_by_encoding_space(left_join(events.timecourse.endspike_all.subs,
                                                        beh, 
                                                        by = c("subj_num", "video_id"))) %>% 
-               fit_pls_xval(x_prefix = "tr",
-                            num_comp = 3)
+               # SO!!! We need to make sure to avoid train-test leakage from the original encoding model to subsequent readout models.
+               # we can do this by either:
+               # fitting a single overall PLS regression for each of the outcome ratings (I honestly think this is fine. we don't need cross-validated generalization perf)
+               # changing this PLS pipeline so that it gets fit along with the main encoding PLS train-test split (I would really prefer not to do this)
+               pivot_longer(cols = starts_with("rating"),
+                            names_to = "rating_type",
+                            values_to = "rating",
+                            names_prefix = "rating_") %>% 
+               fit_model_2level(nest_vars = c("subj_num", "rating_type"),
+                                x_prefix = "voxel",
+                                y_var = "rating",
+                                # 2025-04-11: Previously, at time of submission for CCN 2025 abstract, had set it to do lm
+                                # but I think that is causing the space model to perform way worse on split-half
+                                # bc there are more voxels than timepoints. So if you DO want to compare space against time, consider PLS for dimension reduction
+                                parsnip_model = parsnip::linear_reg(mode = "regression", engine = "lm"),
+                                rm_x = TRUE) %>% 
+               mutate(coefs = map(model, \(x) pluck(extract_fit_engine(x), "coefficients"))) %>% 
+               select(subj_num, rating_type, coefs, preds)
   ),
-  # this one is THIRSTY FOR MEMORY bc it requires all subjects' whole brain full timecourses. 172 GB seems to work with 29 subjects
-  tar_target(name = wb.model.connectivity,
-             command = canlabtools_fit_model_connectivity(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb.conn.%s_%s.csv", encoding_type_full, roi_name)),
-                                                          tr_duration = task_defaults_list$tr_duration,
-                                                          trs_to_use = 1:task_defaults_list$n_trs_kept + (task_defaults_list$disdaq_duration %/% task_defaults_list$tr_duration),
-                                                          bolds = bold.smoothed_all.subs,
-                                                          confounds = confounds.prespm_all.subs,
-                                                          pred.encoding.roi = pred.encoding.xval,
-                                                          script = matlab_fit_model_connectivity),
-             format = "file"),
+  # SEE ABOVE FOR THE DEFINITION OF THE INDIVIDUAL SUBJECT CONNECTIVITY TARGETS
+  subtargets_fmri_canlabtools_by.subject,
+  tar_combine(name = wb.model.connectivity,
+              subtargets_fmri_canlabtools_by.subject[["wb.model.connectivity"]],
+              # output as file in case Phil wants to read them in himself
+              command = {
+                out_path <- here::here("ignore", "outputs", sprintf("naturalistic_wb.conn.%s_%s.csv", encoding_type_full, roi_name))
+                
+                connectivity <- vctrs::vec_c(!!!.x) %>% 
+                  map(\(x) read_csv(x, col_names = FALSE)) %>% 
+                  bind_cols(.name_repair = "unique")
+                
+                cat("transposing subjects back onto the rows\n")
+                connectivity %<>%
+                  t()
+                
+                cat("converting back to dataframe\n")
+                connectivity %<>% 
+                  as.data.frame()
+                
+                cat("writing tibble to file\n")
+                vroom::vroom_write(connectivity, file = out_path, delim = ",", col_names = FALSE, progress = TRUE)
+                
+                out_path
+                },
+              format = "file"),
+  # putting this in a sep target bc this takes like 8-10 min to calculate per statmap bc of all the voxels
+  tar_target(name = tvals.wb.model.connectivity,
+             command = wb.model.connectivity %>% 
+               vroom::vroom(delim = ",", col_names = FALSE, col_types = c(.default = "d")) %>% 
+               summarize_tvals_pre_statmap()
+             ),
   tar_target(name = statmap.wb.model.connectivity,
              command = {
-               connectivity <- vroom::vroom(wb.model.connectivity, delim = ",", col_names = FALSE, col_types = c(.default = "d"))
                # canlabtools fmri_data write method appears to forcibly change periods in file names to underscores
                # so we have to feed in something that won't get changed so that the actual output path matches the expected one from here
                this_encoding_label <- str_replace(encoding_type_full, "\\.", "_")
                canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb_conn_%s_%s.nii", this_encoding_label, roi_name)),
                                           roi = NULL,
-                                          values = summarize_tvals_pre_statmap(perf.encoding.xval),
+                                          values = tvals.wb.model.connectivity,
+                                          threshold_p = .05,
                                           script = matlab_export_statmap)
              },
              format = "file"),
@@ -529,6 +678,53 @@ subtargets_fmri_canlabtools_by.roi <- tar_map(
                   mutate(encoding_type = str_split_i(target_name, "_", -1L)) %>% 
                   select(-target_name)
               }),
+  tar_map(
+    values = crossing(events_type = c("events.raw", "events.endspike", "events.boxcartail"),
+                      n_categories = c("2cat", "5cat", "8cat")) %>% 
+      mutate(events_label = case_match(events_type, "events.raw" ~ "", "events.endspike" ~ ".endspike", "events.boxcartail" ~ ".boxcartail"),
+             outcome_category = case_match(n_categories, "2cat" ~ "looming", "5cat" ~ "object", "8cat" ~ "object_looming"),
+             events_target = syms(sprintf("events.timecourse%s_all.subs", events_label))),
+    tar_target(name = bold.object,
+               command = bolds_all.subs %>%
+                 fit_object_by_pattern(events_allsubs = left_join(events_target,
+                                                                  beh, 
+                                                                  by = c("subj_num", "video_id")),
+                                       n_trs_kept_per_run = task_defaults_list$n_trs_kept,
+                                       pattern_type = "bold",
+                                       outcome_categories = outcome_category,
+                                       n_pls_comp = 20)
+    ),
+    tar_rep(name = perm.acc_bold.object,
+            command = bold.object %>% 
+              select(preds) %>% 
+              unnest(preds) %>% 
+              permute_acc_object_by_pattern(n_perms = 100, 
+                                            outcome_categories = outcome_category),
+            batches = 10,
+            reps = 1
+    ),
+    tar_target(name = encoding.object_flynet.alexnet,
+               command = fit_object_by_pattern(path_pattern_allsubs = pred.encoding.xval_flynet.only_sc,
+                                               events_allsubs = left_join(events_target,
+                                                                          beh, 
+                                                                          by = c("subj_num", "video_id")),
+                                               n_trs_kept_per_run = task_defaults_list$n_trs_kept,
+                                               path_pattern_allsubs_2 = pred.encoding.xval_alexnet.only_sc,
+                                               pattern_type = "encoding",
+                                               outcome_categories = outcome_category,
+                                               n_pls_comp = 20)
+    ),
+    tar_rep(name = perm.acc_encoding.object_flynet.alexnet,
+            command = encoding.object_flynet.alexnet %>% 
+              select(preds) %>% 
+              unnest(preds) %>% 
+              permute_acc_object_by_pattern(n_perms = 100, 
+                                            outcome_categories = outcome_category),
+            batches = 10,
+            reps = 1
+    ),
+    names = c(n_categories, events_type)
+  ),
   names = roi_name
 )
 
@@ -540,7 +736,13 @@ subtargets_fmri_canlabtools_compare.models <- tar_map(
            betas.alexnet.onoff = syms(sprintf("betas.encoding.xval_alexnet.onoff_%s", roi_name)),
            betas.flynet.alexnet = syms(sprintf("betas.encoding.xval_flynet.alexnet_%s", roi_name)),
            preds.flynet = syms(sprintf("pred.encoding.xval_flynet.only_%s", roi_name)),
-           preds.alexnet = syms(sprintf("pred.encoding.xval_alexnet.only_%s", roi_name))),
+           preds.alexnet = syms(sprintf("pred.encoding.xval_alexnet.only_%s", roi_name)),
+           perf.flynet = syms(sprintf("perf.encoding.xval_flynet.only_%s", roi_name)),
+           perf.alexnet = syms(sprintf("perf.encoding.xval_alexnet.only_%s", roi_name)),
+           wb.model.connectivity.flynet = syms(sprintf("wb.model.connectivity_flynet.only_%s", roi_name)),
+           wb.model.connectivity.alexnet = syms(sprintf("wb.model.connectivity_alexnet.only_%s", roi_name)),
+           tvals.wb.model.connectivity.flynet = syms(sprintf("tvals.wb.model.connectivity_flynet.only_%s", roi_name)),
+           tvals.wb.model.connectivity.alexnet = syms(sprintf("tvals.wb.model.connectivity_alexnet.only_%s", roi_name))),
   #### performance from joint encoding models with one set of activations knocked out ----
   tar_target(name = encoding.xval_flynet.minus.onoff,
              command = canlabtools_pred_encoding_pls(out_path_perf = here::here("ignore", "outputs", sprintf("naturalistic_perf.flynet.minus.onoff_%s.csv", roi_name)),
@@ -573,6 +775,79 @@ subtargets_fmri_canlabtools_compare.models <- tar_map(
                read_csv(col_names = FALSE)),
   tar_target(name = pred.encoding.xval_alexnet.minus.onoff,
              command = encoding.xval_alexnet.minus.onoff %>% .[grepl("pred", .)],
+             format = "file"),
+  tar_target(name = statmap.perf.encoding_flynet.minus.alexnet,
+             command = {
+               canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_perf_flynet_minus_alexnet_%s.nii", roi_name)),
+                                          roi = roi_canlabtools,
+                                          values = summarize_tvals_pre_statmap(perf.flynet, perf.alexnet),
+                                          script = matlab_export_statmap)
+             },
+             format = "file"),
+  tar_target(name = tvals.wb.model.connectivity_flynet.minus.alexnet,
+             command = {
+               connectivity.flynet <- vroom::vroom(wb.model.connectivity.flynet, 
+                                                   delim = ",", 
+                                                   col_names = FALSE, 
+                                                   col_types = c(.default = "d"))
+               
+               connectivity.alexnet <- vroom::vroom(wb.model.connectivity.alexnet, 
+                                                    delim = ",", 
+                                                    col_names = FALSE, 
+                                                    col_types = c(.default = "d"))
+               
+               summarize_tvals_pre_statmap(in_data_1 = connectivity.flynet,
+                                           in_data_2 = connectivity.alexnet,
+                                           fun_compare = magrittr::subtract)
+             }),
+  tar_target(name = tvals.wb.model.connectivity_flynet.conj.alexnet,
+             command = {
+               # 2025-04-09: Phil wants it this way (Tom Nichols citation?)
+               # threshold the individual maps first
+               tvals.flynet <- tvals.wb.model.connectivity.flynet %>% 
+                 threshold_tvals_pre_statmap(threshold_p = .05)
+               tvals.alexnet <- tvals.wb.model.connectivity.alexnet %>% 
+                 threshold_tvals_pre_statmap(threshold_p = .05)
+               
+               pmin(tvals.flynet, tvals.alexnet)
+
+             }),
+  tar_target(name = statmap.wb.model.connectivity_flynet.minus.alexnet,
+             command = {
+               tvals_flynet <- vroom::vroom(wb.model.connectivity.flynet, 
+                                                   delim = ",", 
+                                                   col_names = FALSE, 
+                                                   col_types = c(.default = "d")) %>% 
+                 summarize_tvals_pre_statmap() %>% 
+                 threshold_tvals_pre_statmap(threshold_p = .05)
+               
+               tvals_alexnet <- vroom::vroom(wb.model.connectivity.alexnet, 
+                                                    delim = ",", 
+                                                    col_names = FALSE, 
+                                                    col_types = c(.default = "d")) %>% 
+                 summarize_tvals_pre_statmap() %>% 
+                 threshold_tvals_pre_statmap(threshold_p = .05)
+               
+                 # there are many voxels where the difference is supra-threshold non-zero but the higher value isn't supra-threshold on its own
+                 # so for the diff statmap, zero out voxels ahead of time where the higher value on its own doesn't exceed 0
+                 tvals_diff <- tvals.wb.model.connectivity_flynet.minus.alexnet
+                 tvals_diff[tvals_diff > 0 & tvals_flynet <= 0] <- 0
+                 tvals_diff[tvals_diff < 0 & tvals_alexnet <= 0] <- 0
+                 
+               canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb_conn_flynet_minus_alexnet_%s.nii", roi_name)),
+                                          roi = NULL,
+                                          values = tvals_diff,
+                                          threshold_p = .05,
+                                          script = matlab_export_statmap)
+             },
+             format = "file"),
+  tar_target(name = statmap.wb.model.connectivity_flynet.conj.alexnet,
+             command = {
+               canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb_conn_flynet_conj_alexnet_%s.nii", roi_name)),
+                                          roi = NULL,
+                                          values = tvals.wb.model.connectivity_flynet.conj.alexnet,
+                                          script = matlab_export_statmap)
+             },
              format = "file"),
   names = roi_name
 )
@@ -634,13 +909,164 @@ subtargets_fmri_canlabtools_combined <- list(
   )
 )
 
+#### overall summary stat targets ----
+
+summary_funs_bootstrap <- list(mean = \(x) mean(x, na.rm = TRUE),
+                               sd = \(x) sd(x, na.rm = TRUE),
+                               ci95.lower = \(x) quantile(x, .025, na.rm = TRUE),
+                               ci95.upper = \(x) quantile(x, .975, na.rm = TRUE))
+
+subtargets_fmri_summary <- list(
+  tar_target(name = summary_perf.encoding,
+             command = perf.encoding_combined %>% 
+               group_by(roi, encoding_type) %>% 
+               mutate(r2 = perf^2) %>% 
+               summarize(r_mean = mean(perf),
+                         r_se = sd(perf)/sqrt(length(perf)),
+                         r2_mean = mean(r2),
+                         r2_se = sd(r2)/sqrt(length(r2)),
+                         .groups = "drop") %>% 
+               mutate(r_ci95_lower = r_mean - 1.96*r_se,
+                      r_ci95_upper = r_mean + 1.96*r_se,
+                      r2_ci95_lower = r2_mean - 1.96*r2_se,
+                      r2_ci95_upper = r2_mean + 1.96*r2_se)
+  ),
+  tar_target(name = summary_perf.encoding_alexnet.minus.flynet,
+             command = perf.encoding_combined %>% 
+               filter(encoding_type %in% c("flynet.only", "alexnet.only")) %>% 
+               pivot_wider(names_from = encoding_type, values_from = perf) %>% 
+               # a priori we know alexnet is higher so this will get it signed positive. whatever
+               mutate(perf_diff = alexnet.only - flynet.only,
+                      r2_diff = alexnet.only^2 - flynet.only^2) %>% 
+               group_by(roi) %>% 
+               summarize(diff_mean = mean(perf_diff),
+                         diff_se = sd(perf_diff)/sqrt(length(perf_diff)),
+                         diff_cohens.d = (mean(alexnet.only) - mean(flynet.only)) / sqrt((var(alexnet.only) + var(flynet.only))/2),
+                         r2.diff_mean = mean(r2_diff),
+                         r2.diff_cohens.d = (mean(alexnet.only^2) - mean(flynet.only^2)) / sqrt((var(alexnet.only^2) + var(flynet.only^2))/2))
+  ),
+  tar_target(name = summary_pcor.encoding_flynet.alexnet_sc,
+             command = pcor.encoding_flynet.alexnet_sc %>% 
+               group_by(term) %>% 
+               summarize(pcor_mean = mean(estimate),
+                         pcor_se = sd(estimate)/sqrt(length(estimate))) %>% 
+               mutate(pcor_ci95_lower = pcor_mean - 1.96*pcor_se,
+                      pcor_ci95_upper = pcor_mean + 1.96*pcor_se)
+             ),
+  tar_target(name = encoding.selfreport_flynet.alexnet.cbound_sc,
+             command = get_ratings_by_encoding_space(path_pred_allsubs = pred.encoding.xval_flynet.only_sc,
+                                                     events_allsubs = left_join(events.timecourse.endspike_all.subs,
+                                                                                beh, 
+                                                                                by = c("subj_num", "video_id")),
+                                                     path_pred_allsubs_2 = pred.encoding.xval_alexnet.only_sc) %>% 
+               # SO!!! We need to make sure to avoid train-test leakage from the original encoding model to subsequent readout models.
+               # we can do this by either:
+               # fitting a single overall PLS regression for each of the outcome ratings (I honestly think this is fine. we don't need cross-validated generalization perf)
+               # changing this PLS pipeline so that it gets fit along with the main encoding PLS train-test split (I would really prefer not to do this)
+               pivot_longer(cols = starts_with("rating"),
+                            names_to = "rating_type",
+                            values_to = "rating",
+                            names_prefix = "rating_") %>% 
+               fit_model_2level(nest_vars = c("subj_num", "rating_type"),
+                                x_prefix = "voxel",
+                                y_var = "rating",
+                                # 2025-04-11: Previously, at time of submission for CCN 2025 abstract, had set it to do lm
+                                # but I think that is causing the space model to perform way worse on split-half
+                                # bc there are more voxels than timepoints. So if you DO want to compare space against time, consider PLS for dimension reduction
+                                parsnip_model = parsnip::linear_reg(mode = "regression", engine = "lm"),
+                                rm_x = TRUE) %>% 
+               mutate(coefs = map(model, \(x) pluck(extract_fit_engine(x), "coefficients"))) %>% 
+               select(subj_num, rating_type, coefs, preds)
+  ),
+  tar_target(name = encoding.selfreport_rbound_sc,
+             command = bind_rows(alexnet = encoding.selfreport_alexnet.only_sc,
+                                 flynet = encoding.selfreport_flynet.only_sc,
+                                 cbound = encoding.selfreport_flynet.alexnet.cbound_sc,
+                                 .id = "model_type") %>% 
+               select(subj_num, rating_type, model_type, preds) %>% 
+               unnest(preds) %>% 
+               # Clearly some code generalization failure thing is making this column of all NAs pop up. idk man
+               select(-rating)),
+  tar_target(name = summary_encoding.selfreport_sc,
+             command = encoding.selfreport_rbound_sc %>% 
+               nest(.by = c(model_type, rating_type)) %>% 
+               mutate(data = map(data, \(x) group_bootstraps(x, group = subj_num, times = 1000))) %>%
+               unnest(data) %>% 
+               mutate(cor.overall = map_dbl(splits, \(x) x %>% 
+                                              analysis() %$%
+                                              cor(.obs, .pred, method = "spearman"),
+                                            .progress = "bootstrapping pred-obs correlations"),
+                      cor.food = map_dbl(splits, \(x) x %>% 
+                                           analysis() %>% 
+                                           filter(animal_type == "food") %$%
+                                           cor(.obs, .pred, method = "spearman"),
+                                         .progress = "bootstrapping pred-obs correlations FOOD ONLY")) %>%
+               group_by(rating_type, model_type) %>% 
+               summarize(across(starts_with("cor"), 
+                                summary_funs_bootstrap))
+  ),
+  tar_target(name = summary_encoding.selfreport_sc_pcor,
+             command = encoding.selfreport_flynet.alexnet_sc %>% 
+               pivot_wider(names_from = model_type, values_from = .pred) %>% 
+               nest(.by = rating_type) %>% 
+               mutate(data = map(data, \(x) group_bootstraps(x, group = subj_num, times = 1000))) %>%
+               unnest(data) %>% 
+               mutate(coefs.overall = map(splits, \(x) x %>% 
+                                            analysis() %>% 
+                                            # 2025-04-05: SPEARMAN CORRELATION because the split-half models are (predictably) way noisier out of sample. so there are some wild outliers
+                                            mutate(alexnet = dense_rank(alexnet),
+                                                   flynet = dense_rank(flynet)) %>% 
+                                            # to estimate les partial correlations
+                                            lm(scale(.obs) ~ scale(alexnet) + scale(flynet), data = .) %>% 
+                                            broom::tidy(),
+                                          .progress = "bootstrapping partial correlations"),
+                      coefs.food = map(splits, \(x) x %>% 
+                                         analysis() %>% 
+                                         mutate(alexnet = dense_rank(alexnet),
+                                                flynet = dense_rank(flynet)) %>% 
+                                         filter(animal_type == "food") %>% 
+                                         lm(scale(.obs) ~ scale(alexnet) + scale(flynet), data = .) %>% 
+                                         broom::tidy(),
+                                       .progress = "bootstrapping partial correlations FOOD ONLY")) %>% 
+               select(-splits) %>% 
+               pivot_longer(cols = starts_with("coefs"), names_to = "data_subset", values_to = "coefs", names_prefix = "coefs.") %>% 
+               unnest(coefs) %>% 
+               filter(term != "(Intercept)") %>% 
+               group_by(rating_type, data_subset, term) %>% 
+               rename(pcor = estimate) %>% 
+               summarize(across(pcor, summary_funs_bootstrap),
+                         .groups = "drop")
+  ),
+  tar_target(name = summary_encoding.discrim.looming_sc,
+             command = {
+               flynet <- calc_perm_pval_object_by_pattern(preds = encoding.object_2cat_events.endspike_flynet.only_sc, 
+                                                          perms = perm.acc_encoding.object_2cat_events.endspike_flynet.only_sc)
+               alexnet <- calc_perm_pval_object_by_pattern(preds = encoding.object_2cat_events.endspike_alexnet.only_sc, 
+                                                           perms = perm.acc_encoding.object_2cat_events.endspike_alexnet.only_sc)
+               bind_rows(flynet = flynet,
+                         alexnet = alexnet,
+                         .id = "encoding_type")
+               }),
+  tar_target(name = summary_encoding.discrim.looming_by.category_sc,
+             command = {
+               flynet <- calc_perm_pval_object_by_pattern(preds = encoding.object_2cat_events.endspike_flynet.only_sc, 
+                                                          perms = perm.acc_by._encoding.object_2cat_events.endspike_flynet.only_sc)
+               alexnet <- calc_perm_pval_object_by_pattern(preds = encoding.object_2cat_events.endspike_alexnet.only_sc, 
+                                                           perms = perm.acc_encoding.object_2cat_events.endspike_alexnet.only_sc)
+               bind_rows(flynet = flynet,
+                         alexnet = alexnet,
+                         .id = "encoding_type")
+             })
+)
+
 targets_fmri_across.subject <- make_targets_fmri_across.subject(targets_fmri_by.subject,
                                                                 contrast_names,
                                                                 task = "naturalistic",
                                                                 additional_targets = c(subtargets_fmri_across.subject,
                                                                                        subtargets_fmri_canlabtools_by.roi,
                                                                                        subtargets_fmri_canlabtools_compare.models,
-                                                                                       subtargets_fmri_canlabtools_combined))
+                                                                                       subtargets_fmri_canlabtools_combined,
+                                                                                       subtargets_fmri_summary))
 
 ## targets: splitting by parcel ROI (for whole-brainy analyses) ----
 
@@ -741,13 +1167,13 @@ targets_beh <- list(
                select(-has_loom, -animal_type) %>% 
                expand(subj_num,
                       nesting(video1 = video_id, 
-                              pleasantness1 = pleasantness_rating, 
-                              arousal1 = arousal_rating, 
-                              fear1 = fear_rating), 
+                              pleasantness1 = rating_pleasantness, 
+                              arousal1 = rating_arousal, 
+                              fear1 = rating_fear), 
                       nesting(video2 = video_id, 
-                              pleasantness2 = pleasantness_rating, 
-                              arousal2 = arousal_rating, 
-                              fear2 = fear_rating)) %>% 
+                              pleasantness2 = rating_pleasantness, 
+                              arousal2 = rating_arousal, 
+                              fear2 = rating_fear)) %>% 
                filter(video1 != video2) %>% 
                # halve_tidy_rdm(row_col = video1, col_col = video2) %>% 
                mutate(diff_pleasantness = abs(pleasantness1 - pleasantness2),
@@ -832,12 +1258,26 @@ targets_plots <- list(
              command = plot_selfreport_ratings(beh) +
                  this_theme
   ),
+  tar_target(plot_ratings_nofood,
+             command = beh %>% 
+               filter(animal_type != "food") %>% 
+               plot_selfreport_ratings() +
+               this_theme
+  ),
+  tar_target(plot_schematic_unit.activation,
+             # since it's a schematic, just use subject 1
+             command = list("looming" = activations.flynet_sub.0001,
+                            "object" = activations.alexnet_sub.0001) %>% 
+               plot_sample_timecourse_activation() +
+               this_theme +
+               theme(aspect.ratio = 1/3)
+             ),
   tar_target(plot_schematic_encoding.bold.pred,
              command = plot_sample_timecourse_encoding(pred.encoding.xval_sc,
-                                                       encoding_models = c("flynet.only",
-                                                                           "alexnet.only",
-                                                                           "onoff.only")) +
+                                                       encoding_models = c("looming" = "flynet.only",
+                                                                           "object" = "alexnet.only")) +
                this_theme +
+               # the aspect ratio is for a single panel on faceted plots
                theme(aspect.ratio = 1/3)
   ),
   tar_target(plot_schematic_bold,
@@ -845,9 +1285,25 @@ targets_plots <- list(
                this_theme +
                theme(aspect.ratio = 1/3)
   ),
+  tar_target(plot_bold.object_auroc,
+             command = plot_auroc_8cat(bold.object_8cat_events.endspike_sc) +
+               this_theme
+  ),
   tar_target(plot_encoding.perf,
              command = plot_encoding_performance(perf.encoding_combined) +
                this_theme
+  ),
+  tar_target(plot_encoding.perf_flynet.alexnet_sc,
+             command = plot_encoding_performance(perf.encoding_combined, 
+                                                 encoding_types = c("looming" = "flynet.only", 
+                                                                    "object" = "alexnet.only"), 
+                                                 rois = "sc") +
+               guides(color = "none") + 
+               labs(x = NULL,
+                    subtitle = NULL) +
+               this_theme +
+               theme(axis.title = element_text(size = rel(1.3)),
+                     axis.text = element_text(size = rel(1.05)))
   ),
   tar_target(plot_encoding.pcor_flynet.alexnet,
              command = bind_rows(sc = pcor.encoding_flynet.alexnet_sc,
@@ -855,7 +1311,19 @@ targets_plots <- list(
                                  .id = "roi") %>% 
                plot_encoding_performance_pcor() +
                this_theme
-  )
+  ),
+  tar_target(plot_encoding.object_confusion_flynet.alexnet,
+             command = bind_rows(looming = encoding.object_8cat_events.endspike_flynet.only_sc,
+                                 object = encoding.object_8cat_events.endspike_alexnet.only_sc,
+                                 .id = "model_type") %>% 
+               select(-coefs) %>% 
+               unnest(preds) %>% 
+               plot_confusion_8cat(facet_var = model_type) +
+               this_theme
+  ),
+  tar_target(name = plot_encoding.selfreport_flynet.alexnet_pcor,
+             command = plot_encoding_selfreport_pcor(summary_encoding.selfreport_sc_pcor) +
+               this_theme)
 )
 
 targets_plots.rdm <- list(
@@ -950,18 +1418,25 @@ targets_figs <- list(
                               height = 1200,
                               units = "px"),
              format = "file"),
+  tar_target(fig_schematic_unit.activation,
+             command = ggsave(here::here("ignore", "figs", "naturalistic_schematic_activation.png"),
+                              plot = plot_schematic_unit.activation,
+                              width = 1500,
+                              height = 1200,
+                              units = "px"),
+             format = "file"),
   tar_target(fig_schematic_encoding.bold.pred,
              command = ggsave(here::here("ignore", "figs", "naturalistic_schematic_encoding_bold.png"),
                               plot = plot_schematic_encoding.bold.pred,
-                              width = 2800,
-                              height = 2400,
+                              width = 1500,
+                              height = 1200,
                               units = "px"),
              format = "file"),
   tar_target(fig_schematic_bold,
              command = ggsave(here::here("ignore", "figs", "naturalistic_schematic_bold.png"),
                               plot = plot_schematic_bold,
                               width = 1500,
-                              height = 800,
+                              height = 700,
                               units = "px"),
              format = "file"),
   tar_target(fig_encoding.perf,
@@ -969,6 +1444,14 @@ targets_figs <- list(
                               plot = plot_encoding.perf,
                               width = 3500,
                               height = 2000,
+                              units = "px"),
+             format = "file"),
+  tar_target(fig_encoding.perf_flynet.alexnet_sc,
+             command = ggsave(here::here("ignore", "figs", "naturalistic_encoding_perf_flynet.alexnet_sc.png"),
+                              plot = plot_encoding.perf_flynet.alexnet_sc +
+                                scale_color_manual(values = c("looming" = "green3", "object" = "blue3")),
+                              width = 1000,
+                              height = 1800,
                               units = "px"),
              format = "file"),
   tar_target(fig_encoding.pcor_flynet.alexnet,
@@ -979,6 +1462,69 @@ targets_figs <- list(
                               units = "px"),
              format = "file")
 )
+
+theme_poster <- theme_bw(base_size = 16) +
+  theme(plot.background = element_blank(),
+        legend.background = element_blank())
+
+colors_sans2025_loom.noloom <- c("Looming" = "#8ace00", "No looming" = "#527a00")
+colors_sans2025_looming.object <- c("looming" = "#8ace00", "object" = "#926372")
+
+targets_figs_sans2025 <- list(
+  tar_target(name = fig_sans2025_ratings,
+             command = ggsave(here::here("ignore", "figs", "sans2025_naturalistic_ratings.png"),
+                              plot = plot_ratings_nofood +
+                                scale_color_manual(values = colors_sans2025_loom.noloom) +
+                                labs(subtitle = NULL,
+                                     x = NULL) +
+                                theme(legend.position = "inside", 
+                                      legend.position.inside = c(1,1), 
+                                      legend.justification = c(1,1)),
+                              width = 2000,
+                              height = 900,
+                              units = "px"),
+             format = "file"),
+  tar_target(fig_sans2025_bold.object_auroc,
+             command = ggsave(here::here("ignore", "figs", "sans2025_naturalistic_bold_object_auroc.png"),
+                              plot = plot_bold.object_auroc +
+                                guides(color = guide_legend(override.aes = list(linewidth = 3))) +
+                                scale_color_manual(values = colors_sans2025_loom.noloom) +
+                                theme(legend.position = "inside",
+                                      legend.position.inside = c(1, 0),
+                                      legend.justification = c(1, 0)),
+                              width = 2000,
+                              height = 2300,
+                              units = "px"),
+             format = "file"),
+  tar_target(fig_sans2025_encoding.perf_flynet.alexnet_sc,
+             command = ggsave(here::here("ignore", "figs", "sans2025_naturalistic_encoding_perf_flynet.alexnet_sc.png"),
+                              plot = plot_encoding.perf_flynet.alexnet_sc +
+                                scale_color_manual(values = colors_sans2025_looming.object) +
+                                # the labels don't need to be angled anymore
+                                guides(x = guide_axis()),
+                              width = 1800,
+                              height = 1600,
+                              units = "px"),
+             format = "file"),
+  tar_target(fig_sans2025_encoding.object_confusion_flynet.alexnet,
+             command = ggsave(here::here("ignore", "figs", "sans2025_naturalistic_encoding_object_confusion_flynet.alexnet_sc.png"),
+                              plot = plot_encoding.object_confusion_flynet.alexnet +
+                                theme(aspect.ratio = 1,
+                                      strip.text = element_text(size = rel(1))),
+                              width = 4200,
+                              height = 2000,
+                              units = "px"),
+             format = "file"),
+  tar_target(fig_sans2025_encoding.selfreport.pcor,
+             command = ggsave(here::here("ignore", "figs", "sans2025_naturalistic_encoding_selfreport_pcor.png"),
+                              plot = plot_encoding.selfreport_flynet.alexnet_pcor +
+                                scale_color_manual(values = colors_sans2025_looming.object),
+                              width = 1800,
+                              height = 800,
+                              units = "px"),
+             format = "file")
+)
+
 
 targets_figs.rdm <- list(
   tar_target(
@@ -1006,8 +1552,10 @@ list(
   targets_stimuli,
   targets_stimlists,
   targets_encoding.models,
+  targets_qc,
   targets_fmri_across.subject,
   targets_beh,
   targets_plots,
-  targets_figs
+  targets_figs,
+  targets_figs_sans2025
 )
