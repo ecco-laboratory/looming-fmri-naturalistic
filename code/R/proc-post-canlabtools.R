@@ -1,24 +1,233 @@
 # various targets-safe helper functions for extra modeling stuff on canlabtools outputs ----
 
+## voxelwise statmap data operations ----
+
+# set all sub-threshold voxel values to 0
+threshold_tvals_pre_statmap <- function (tvals,                                        
+                                         threshold_t = NULL,
+                                         threshold_p = NULL,
+                                         p_adjust_method = "BH") {
+  # thresholds are absolute values
+  # if both are provided, use threshold_p
+  if (!is.null(threshold_p)) {
+    pvals <- tvals %>% 
+      # get two-tailed p-values
+      map_dbl(\(x) if (is.nan(x)) {NaN} else if (x > 0) {pnorm(x, lower.tail = FALSE)} else {pnorm(x, lower.tail = TRUE)})
+    
+    if (!is.na(p_adjust_method)) pvals <- p.adjust(pvals, method = p_adjust_method, n = sum(!is.nan(pvals)))
+    tvals[pvals > threshold_p] <- 0
+    
+  } else if (!is.null(threshold_t)) {
+    tvals[abs(tvals) < threshold_t] <- 0
+  }
+  
+  return (tvals)
+}
+
 # this function assumes voxels comes in on the COLUMN
 # and held-out subject is on the ROW
-summarize_tvals_pre_statmap <- function (in_data) {
-  in_data %>% 
+# fun_compare must take 2 vector arguments, compare them vectorized/element-wise, and return 1 vector
+# fun_compare is ignored if in_data_2 is not specified (and there is thus nothing to compare)
+summarize_tvals_pre_statmap <- function (in_data_1, in_data_2 = NULL, fun_compare = magrittr::subtract) {
+  
+  in_data_1 <- as.list(in_data_1)
+  
+  if (!is.null(in_data_2)) {
+    in_data_2 <- as.list(in_data_2)
+    test_data <- map2(in_data_1, in_data_2, \(x, y) fun_compare(x, y),
+                      .progress = "calculating comparison map over voxels")
+  } else {
+    test_data <- in_data_1
+  }
+  
+  test_data %>% 
+    # use list and naked map so we get the .progress bar. whole-brain can take a while bc so many voxels
     # get the cross-validated t-value for each voxel as the independent mean/SE over HELD-OUT SUBJECTS
-    summarize(across(everything(), 
-                     \(x) mean(x) / (sd(x)/sqrt(length(x))) )) %>% 
-    # convert the 1-row dataframe to a vector. the voxel values should stay in the same order
-    as.numeric() %>% 
+    # leaving na.rm = FALSE for all of them so it only returns a connectivity t-val if all subjects had values
+    map_dbl(\(x) mean(x) / (sd(x)/sqrt(length(x))), 
+            .progress = "calculating voxel t-vals over xval folds") %>% 
+    # because matlab doesn't have an NA type
+    replace_na(NaN) %>% 
     # round so that sending these to matlab through the command line won't be too long
     round(digits = 3)
 }
 
+## modeling other stuff as a function of main fMRI encoding model preds ----
+
+calc_perm_pval_object_by_pattern <- function (preds, perms, grouping_cols = NULL) {
+  # grouping_cols <- enquos(grouping_cols)
+  acc_true <- preds %>% 
+    select(preds) %>% 
+    unnest(preds) %>% 
+    calc_metrics_nested_classprobs(grouping_cols = grouping_cols)
+  
+  out <- perms %>% 
+    unnest(acc_perm) %>% 
+    left_join(acc_true, by = c(".metric", ".estimator"), suffix = c("_perm", "_real")) %>% 
+    group_by(.metric, pick({{grouping_cols}})) %>% 
+    summarize(estimate = unique(.estimate_real),
+              pval = (sum(.estimate_perm > .estimate_real)+1)/(n()+1))
+  
+  return (out)
+}
+
+permute_acc_object_by_pattern <- function (preds, n_perms, outcome_categories = c("object", "looming", "object_looming"), acc_grouping_cols = NULL) {
+  stopifnot(length(outcome_categories) == 1)
+  
+  out <- preds %>% 
+    # keep only cols required for computing accuracy
+    select(subj_num, run_num, {{acc_grouping_cols}}, .obs, .preds, .pred) %>% 
+    # nest blocks that will be kept together in permuting
+    # TODO: below line needs fixing to keep acc_grouping_cols
+    nest(obs = .obs, pred = c({{acc_grouping_cols}}, .preds, .pred), .by = c(subj_num, run_num)) %>% 
+    # the n_trs stuff is to shorten all "runs" to the shortest one so that the permuted TR vectors will be the same length
+    # because omitting the fixation TRs causes the runs no longer to have the same amount of data within or between subject
+    mutate(n_trs = map_int(obs, nrow)) %>% 
+    group_by(subj_num) %>% 
+    mutate(min_n_trs = min(n_trs)) %>% 
+    ungroup() %>% 
+    # shorten by dropping later TRs
+    mutate(obs = map2(obs, min_n_trs, \(x, y) slice_head(x, n = y)),
+           pred = map2(pred, min_n_trs, \(x, y) slice_head(x, n = y))) %>% 
+    # next, by subject so that blocks will only be permuted within subject
+    nest(.by = subj_num) %>%
+    # IF THIS IS CALLED WITHIN A TAR_REP, MULTIPLY N_PERMS BY THE NUMBER OF BATCHES FOR THE TOTAL OVERALL NUMBER OF ITERATIONS
+    mutate(data = map(data, \(x) permutations(x, obs, times = n_perms), 
+                      .progress = "permuting")) %>% 
+    # now get splits out of the nest and into a column
+    unnest(data) %>% 
+    # reconstruct across-subjects permuted datasets. requires pulling full data out of the splits objects
+    mutate(perm_data = map(splits, \(x) analysis(x) %>% unnest(cols = c(obs, pred)), 
+                           .progress = "unnesting within subject")) %>% 
+    select(-splits) %>% 
+    unnest(perm_data) %>% 
+    nest(.by = id)
+  
+  if (outcome_categories == "looming") {
+    out %<>%
+      # for 2 classes, metrics only takes a single probability
+      mutate(data = map(data, \(x) mutate(x, .preds = map(.preds, \(y) y[1]))))
+  }
+  
+  out %<>% 
+    # now compute permuted accuracy & AUROC metrics
+    mutate(acc_perm = map(data, \(x) calc_metrics_nested_classprobs(x, grouping_cols = acc_grouping_cols), 
+                          .progress = "calculating perm-wise acc")) %>% 
+    # drop the actual permuted data for space saving
+    select(-data)
+  
+  return (out)
+}
+
+calc_metrics_nested_classprobs <- function (preds, grouping_cols = NULL, classprob_prefix = ".pred_outcome") {
+  preds %>% 
+    unnest_wider(col = .preds) %>% 
+    group_by(pick({{grouping_cols}})) %>% 
+    metrics(truth = .obs, estimate = .pred, starts_with(classprob_prefix))
+}
+
+fit_object_by_pattern <- function (path_pattern_allsubs, 
+                                   events_allsubs, 
+                                   n_trs_kept_per_run, 
+                                   path_pattern_allsubs_2 = NULL,
+                                   pattern_type = c("bold", "encoding"), 
+                                   outcome_categories = c("object", "looming", "object_looming"),
+                                   n_pls_comp = 5) {
+  # just to save memory since these aren't used for this analysis
+  events_allsubs %<>%
+    select(-starts_with("rating"))
+  
+  stopifnot(length(pattern_type) == 1)
+  
+  if (pattern_type == "bold") {
+    
+    timecourses <- path_pattern_allsubs %>% 
+      load_bold_mat_allsubs() %>% 
+      select(-fold_num)
+  
+  } else if (pattern_type == "encoding") {
+    
+    timecourses <- load_encoding_pred_allsubs(path_pattern_allsubs)
+    
+    if (!is.null(path_pattern_allsubs_2)) {
+      timecourses %<>%
+        left_join(load_encoding_pred_allsubs(path_pattern_allsubs_2),
+                  by = c("subj_num", "tr_num"),
+                  suffix = c(".1", ".2"))
+    }
+  }
+  
+  out <- timecourses %>% 
+    left_join(events_allsubs, by = c("subj_num", "tr_num")) %>% 
+    # reconstruct run number here for later block permutation by run
+    mutate(run_num = (tr_num-1) %/% n_trs_kept_per_run) %>% 
+    # PHIL HAD SET UP HIS PRELIMINARY ANALYSIS TO EXCLUDE FIXATION TIMEPOINTS
+    filter(!is.na(animal_type), animal_type != "fixation")
+  
+  stopifnot(length(outcome_categories) == 1)
+  
+  if (outcome_categories == "object") {
+    out %<>%
+      rename(outcome = animal_type)
+  } else if (outcome_categories == "looming") {
+    out %<>%
+      mutate(outcome = if_else(has_loom == 1, "loom", "no.loom"))
+  } else if (outcome_categories == "object_looming") {
+    out %<>%
+      # when classifying the interaction of object and looming, drop food because it never looms
+      # to reduce imbalance
+      filter(animal_type != "food") %>% 
+      unite("outcome", animal_type, has_loom, sep = ".")
+  }
+  
+  out %<>% 
+    # x_prefix = "voxel" works for both bold and encoding (assuming encoding is always by space)
+    fit_model_xval(x_prefix = "voxel",
+                   y_prefix = "outcome",
+                   parsnip_model = set_engine(parsnip::pls(mode = "regression", num_comp = n_pls_comp), engine = "plsr", method = "simpls"),
+                   additional_recipe_steps = \(x) step_dummy(x, all_of("outcome"), role = "outcome", one_hot = TRUE, skip = TRUE),
+                   rm_x = TRUE,
+                   return_longer = FALSE) %>% 
+    # 2025-05-05: We want to save the betas out now too for subsequent second-order correlation analysis with the encoding.selfreport models
+    # the object is too large to save out if we keep all the model fits
+    mutate(coefs = map(model, 
+                       \(x) {
+                         model_obj <- extract_fit_engine(x)
+                         ncomp <- pluck(model_obj, "ncomp")
+                         coefficients <- pluck(model_obj, "coefficients")
+                         return(coefficients[ , , ncomp])
+                       },
+                       .progress = "extracting coefs")) %>% 
+    select(coefs, preds) %>% 
+    mutate(preds = map(preds, \(x) x %>% 
+                         rename(.obs = .obs_outcome) %>% 
+                         # at this point, .obs is just the original categorical column but .pred has the 5 columns from the one-hot outcome levels
+                         # bundle .obs and .pred together to make it easier to extract the max for each one as the class label
+                         nest(.preds = starts_with(".pred")) %>% 
+                         mutate(.preds = map(.preds, \(y) unlist(y)),
+                                # keep both the numeric PLS-DA "class predictions" and the label for the max class prediction
+                                # the former for ROC curves and the latter for straight-up accuracy
+                                .pred = map_chr(.preds, \(y) names(y)[y == max(y)])) %>% 
+                         # clean up class labels that were pulled from predictor col names
+                         mutate(.pred = str_split_i(.pred, "_", 3)) %>% 
+                         # and finally push everything back to factor for tidymodels accuracy etc
+                         mutate(.obs = factor(.obs),
+                                # patch all categories back in in case one is never predicted
+                                .pred = factor(.pred, levels = levels(.obs))),
+                       .progress = "cleaning up class predictions"))
+  
+  if (outcome_categories == "looming") {
+    out %<>%
+      # for 2 classes, metrics only takes a single probability
+      mutate(preds = map(preds, \(x) mutate(x, .preds = map(.preds, \(y) y[1]))))
+  }
+  
+  return (out)
+}
+
 get_ratings_by_encoding_time <- function (path_pred_allsubs, events_allsubs) {
   
-  pred_encoding <- load_encoding_pred_allsubs(path_pred_allsubs) %>% 
-    group_by(fold_num) %>% 
-    mutate(tr_num = 1:n()) %>% 
-    ungroup()
+  pred_encoding <- load_encoding_pred_allsubs(path_pred_allsubs)
   
   out <- pred_encoding %>% 
     # ??? SHOULD WE INDEPENDENTLY Z-SCORE EACH OF THE PRED-BOLD COLUMNS BEFORE AVERAGING TOGETHER?
@@ -26,10 +235,10 @@ get_ratings_by_encoding_time <- function (path_pred_allsubs, events_allsubs) {
     pivot_longer(cols = starts_with("voxel"),
                  names_to = "voxel_num",
                  values_to = "bold_pred") %>% 
-    group_by(fold_num, tr_num) %>% 
+    group_by(subj_num, tr_num) %>% 
     summarize(bold_pred_mean = mean(bold_pred), 
               .groups = "drop") %>% 
-    left_join(events_allsubs, by = c("fold_num", "tr_num")) %>% 
+    left_join(events_allsubs, by = c("subj_num", "tr_num")) %>% 
     filter(!is.na(video_id)) %>% 
     group_by(subj_num, video_id) %>% 
     mutate(across(c(starts_with("rating"), animal_type, has_loom), \(x) x[1]),
@@ -45,15 +254,19 @@ get_ratings_by_encoding_time <- function (path_pred_allsubs, events_allsubs) {
   return (out)
 }
 
-get_ratings_by_encoding_space <- function (path_pred_allsubs, events_allsubs) {
+get_ratings_by_encoding_space <- function (path_pred_allsubs, events_allsubs, path_pred_allsubs_2 = NULL) {
   
-  pred_encoding <- load_encoding_pred_allsubs(path_pred_allsubs) %>% 
-    group_by(fold_num) %>% 
-    mutate(tr_num = 1:n()) %>% 
-    ungroup()
+  pred_encoding <- load_encoding_pred_allsubs(path_pred_allsubs)
+  
+  if (!is.null(path_pred_allsubs_2)) {
+    pred_encoding %<>%
+      left_join(load_encoding_pred_allsubs(path_pred_allsubs_2),
+                by = c("subj_num", "tr_num"),
+                suffix = c(".1", ".2"))
+  }
   
   out <- pred_encoding %>% 
-    left_join(events_allsubs, by = c("fold_num", "tr_num")) %>% 
+    left_join(events_allsubs, by = c("subj_num", "tr_num")) %>% 
     filter(!is.na(video_id)) %>% 
     group_by(subj_num, video_id) %>% 
     mutate(across(c(starts_with("rating"), animal_type, has_loom), \(x) x[1])) %>% 
@@ -79,19 +292,13 @@ calc_pcor_encoding_on_bold <- function (path_bold_mat_all_subs,
     # ahead of joining it onto the voxel preds for each encoding type
     rename_with(\(x) paste0(x, "_obs"), starts_with("voxel"))
   
-  encoding_preds_1 <- load_encoding_pred_allsubs(path_encoding_preds_1) %>% 
-    group_by(fold_num) %>% 
-    mutate(tr_num = 1:n()) %>% 
-    ungroup()
+  encoding_preds_1 <- load_encoding_pred_allsubs(path_encoding_preds_1)
   
-  encoding_preds_2 <- load_encoding_pred_allsubs(path_encoding_preds_2) %>% 
-    group_by(fold_num) %>% 
-    mutate(tr_num = 1:n()) %>% 
-    ungroup()
+  encoding_preds_2 <- load_encoding_pred_allsubs(path_encoding_preds_2)
   
   coefs_xval <- encoding_preds_1 %>% 
-    full_join(encoding_preds_2, by = c("fold_num", "tr_num"), suffix = paste0("_", encoding_names_str)) %>% 
-    full_join(bold, by = c("fold_num", "tr_num")) %>% 
+    full_join(encoding_preds_2, by = c("subj_num", "tr_num"), suffix = paste0("_", encoding_names_str)) %>% 
+    full_join(bold, by = c("subj_num", "tr_num")) %>% 
     pivot_longer(cols = starts_with("voxel"),
                  names_to = c("voxel_num", ".value"),
                  names_sep = "_") %>% 
@@ -136,13 +343,16 @@ load_bold_mat_allsubs <- function (path_bold_mat_allsubs) {
 load_encoding_pred_allsubs <- function (path_pred_allsubs) {
   out <- path_pred_allsubs %>% 
     read_csv(col_names = FALSE) %>% 
-    rename(fold_num = X1) %>% 
+    rename(subj_num = X1) %>% 
     rename_with(\(x) x %>% 
                   str_sub(start = 2L) %>% 
                   as.integer() %>% 
                   subtract(1L) %>% 
                   paste0("voxel.", .), 
-                starts_with("X"))
+                starts_with("X")) %>% 
+    group_by(subj_num) %>% 
+    mutate(tr_num = 1:n()) %>% 
+    ungroup()
   
   return (out)
 }

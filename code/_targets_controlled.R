@@ -19,14 +19,14 @@ tar_option_set(
                "rlang",
                "qualtRics"), # packages that your targets need to run
   controller = crew.cluster::crew_controller_slurm(
-    workers = 8,
-    seconds_idle = 30,
+    workers = 16,
+    seconds_idle = 15,
     options_cluster = crew.cluster::crew_options_slurm(
       verbose = TRUE,
       script_lines = "#SBATCH --account=default",
       log_output = "/home/%u/log/crew_log_%A.out",
       log_error = "/home/%u/log/crew_log_%A.err",
-      memory_gigabytes_required = 4,
+      memory_gigabytes_required = 8,
       cpus_per_task = 1,
       time_minutes = 1339,
       partition = "day-long"
@@ -391,38 +391,11 @@ targets_demos <- list(
 # but it _should_ update itself if new files appear that match the list.files pattern
 targets_qc <- list(
   tar_files(name = confounds_allsubs,
-            command = list.files(inject(here::here(!!!path_here_derivatives)), 
-                                 pattern = "(.*)task-controlled(.*)desc-confounds_timeseries.tsv$", 
-                                 recursive = TRUE, 
-                                 full.names = TRUE)),
+            command = get_all_raw_confounds()),
   tar_target(name = signal_quality,
-             command = {
-               filename <- basename(confounds_allsubs)
-               bids_parts <- str_split_1(filename, pattern = "_")
-               # skip out for pilot subjects
-               if (startsWith(bids_parts[1], "sub-99")) return (NULL)
-               
-               this_subj <- bids_parts[1] %>% 
-                 str_split_1(pattern = "-") %>% 
-                 pluck(2) %>% 
-                 as.integer()
-               
-               this_task <- bids_parts[2] %>% 
-                 str_split_1(pattern = "-") %>% 
-                 pluck(2)
-               
-               this_run <- bids_parts[3] %>% 
-                 str_split_1(pattern = "-") %>% 
-                 pluck(2) %>% 
-                 as.integer()
-               
-               get_noise_measures(confounds_allsubs,
-                                  tr_duration = task_defaults_list$tr_duration,
-                                  disdaq_duration = task_defaults_list$disdaq_duration) %>% 
-                 mutate(subj_num = this_subj, 
-                        run_num = this_run,
-                        task = this_task)
-             },
+             command = get_labeled_noise_measures_by_subject(confounds_allsubs,
+                                                             tr_duration = task_defaults_list$tr_duration,
+                                                             disdaq_duration = task_defaults_list$disdaq_duration),
              pattern = map(confounds_allsubs))
 )
 

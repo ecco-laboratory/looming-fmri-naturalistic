@@ -53,7 +53,14 @@ bold_masked_allsubjs = zeros(n_subjs*bold_height, width(bold.DATA));
 subj_indices = zeros(n_subjs*bold_height, 1);
 this_subj_indices = 1:bold_height;
 bold_masked_allsubjs(this_subj_indices, :) = bold.DATA;
-subj_indices(this_subj_indices, 1) = 1;
+
+% pull the proper subject number from paths_masked and use THAT instead of loose fold order for subj indices
+% so it will be robust to potential differences in fold structure
+subj_nums = [];
+[~, file_masked, ~] = fileparts(paths_masked{1});
+this_subj_num = str2double(extractBetween(convertCharsToStrings(file_masked), 5, 8));
+subj_indices(this_subj_indices, 1) = this_subj_num;
+subj_nums = [subj_nums, this_subj_num];
 
 % loop over the rest of the subjects
 for i=2:n_subjs
@@ -62,10 +69,12 @@ for i=2:n_subjs
     % whatever. I doubt failure
     this_subj_indices = (1:bold_height) + (bold_height * (i-1));
     bold_masked_allsubjs(this_subj_indices, :) = bold.DATA;
-    subj_indices(this_subj_indices, 1) = i;
-    
+    [~, file_masked, ~] = fileparts(paths_masked{i});
+    this_subj_num = str2double(extractBetween(convertCharsToStrings(file_masked), 5, 8));
+    subj_indices(this_subj_indices, 1) = this_subj_num;
+    subj_nums = [subj_nums, this_subj_num];
 end
-clear bold this_subj_indices
+clear bold this_subj_indices file_masked
 
 %% PLS THEM TOGETHER!!!
 disp('Preparing to fit model')
@@ -88,7 +97,7 @@ fprintf('Fitting with %03d PLS components\n', n_pls_comps)
 fprintf('Current held-out subject:           ')
 for k=1:n_subjs
     fprintf('\b\b\b\b\b\b\b\b\b\b%03d of %03d', k, n_subjs)
-    train_idx = subj_indices~=k;
+    train_idx = subj_indices~=subj_nums(k);
     test_idx = ~train_idx;
 
     [~,~,~,~,beta_cv] = plsregress(activations(train_idx,:), bold_masked_allsubjs(train_idx,:), n_pls_comps);
@@ -125,6 +134,6 @@ end
 % similarly, create and bind the fold indices to the cross-val betas
 if exist('out_path_betas', 'var') == 1
     betas = reshape(permute(betas, [1 3 2]), [], n_voxels);
-    beta_subj_indices = repelem(1:n_subjs, n_units+1)';
+    beta_subj_indices = repelem(subj_nums, n_units+1)';
     writematrix([beta_subj_indices, betas], out_path_betas);
 end

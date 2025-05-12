@@ -207,7 +207,8 @@ format_events_matlab <- function (onsets, raw_path, onset_type) {
 
 # this one just transforms an onsets-formatted dataframe into one with 1 row per TR
 # and a column saying what stimulus (or fixation) is on screen
-make_condition_timecourse <- function (onsets, 
+make_condition_timecourse <- function (onsets,
+                                       out_path,
                                        tr_duration, 
                                        n_trs) {
   stims <- tibble()
@@ -239,27 +240,72 @@ make_condition_timecourse <- function (onsets,
       bind_rows(this_stim)
   }
   
-  return (stims)
+  write_csv(stims,
+            file = out_path)
+  
+  return (out_path)
 }
 
 # takes single-subject timecourse (result of make_condition_timecourse but row-concatenated across runs)
 # and relabels the video_id column not to correspond to the actual presentation,
 # but an endspike window anchored around the END of each video.
-# using R convention, -1 corresponds to the final TR of each video
+# using R convention, 1 corresponds to the first TR of each video and -1 corresponds to the final TR,
+# so you can count either forwards or backwards
 # window length is inclusive of start and end
 # returns with an appropriate lag-windowed version of the timecourse
 # where TRs not belonging to a stimulus are marked as NA
 relabel_timecourse_endspike <- function (timecourse,
                                          window_start = -2L,
                                          window_length = 10L) {
+  
   timecourse$video_id_lagged <- NA
+  
   for (i in 1:(nrow(timecourse)-1)) {
+    # if window_start is negative, count from the END of the video BACKWARDS
+    if (sign(window_start) == -1) {
     # if a final TR is identified, label a 10-TR (4.92 second) window from the last 2 TRs within the video to the 8 TRs after
     # to get end-of-video related BOLD variation??? peut-etre?
     if (timecourse$video_id[i] != "fixation" & timecourse$video_id[i+1] == "fixation") {
-      this_window_start <- i+1-window_start
-      this_window_end <- i+window_length-1
+      this_window_start <- i+1+window_start
+      this_window_end <- this_window_start+window_length-1
       timecourse$video_id_lagged[this_window_start:this_window_end] <- timecourse$video_id[i]
+      }
+    } else {
+      # otherwise if positive, count from the BEGINNING of the video FORWARDS
+      # identify initial TRs only
+      if (timecourse$video_id[i] != "fixation" & timecourse$video_id[i-1] == "fixation") {
+        this_window_start <- i-1+window_start
+        this_window_end <- this_window_start+window_length-1
+        timecourse$video_id_lagged[this_window_start:this_window_end] <- timecourse$video_id[i]
+      }
+    }
+  }
+  
+  out <- timecourse %>% 
+    select(-video_id) %>% 
+    rename(video_id = video_id_lagged)
+  
+  return (out)
+}
+
+# similar to above, but instead of returning fixed-length windows anchored at different points in the stimulus video
+# returns the full original boxcar but with an added tail of "stimulus"-labeled TRs at the end
+# to account for hemodynamic lag relative to stimulus presentation
+# tail length of 0 is equivalent to the original timecourse
+# it doesn't handle negative tails right now so don't try it
+relabel_timecourse_boxcartail <- function (timecourse,
+                                           tail_length = 10L) {
+  timecourse$video_id_lagged <- NA
+  
+  for (i in 1:(nrow(timecourse)-1)) {
+    # if it's any video TR, label it
+    if (timecourse$video_id[i] != "fixation") {
+      timecourse$video_id_lagged[i] <- timecourse$video_id[i]
+      # if it's the final TR, calculate and label the tail as well
+      if(timecourse$video_id[i+1] == "fixation") {
+        this_window_end <- i+tail_length
+        timecourse$video_id_lagged[i:this_window_end] <- timecourse$video_id[i]
+      }
     }
   }
   
