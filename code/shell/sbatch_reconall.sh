@@ -7,8 +7,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --partition day-long  # Queue names you can submit to
 # Outputs ----------------------------------
-#SBATCH -o /home/%u/log/%x-%A.out
-#SBATCH -e /home/%u/log/%x-%A.err
+#SBATCH -o /home/%u/log/%x-%A-%a.out
+#SBATCH -e /home/%u/log/%x-%A-%a.err
 #SBATCH --mail-user=mthieu@emory.edu
 #SBATCH --mail-type=ALL
 # ------------------------------------------
@@ -24,3 +24,11 @@ recon-all \
 -s sub-${SUBJ_NUM_4D} \
 -i /base/fmri/nifti/sub-${SUBJ_NUM_4D}/anat/sub-${SUBJ_NUM_4D}_T1w.nii.gz \
 -all
+
+singularity run -B /archival/projects/SPLaT/data/mesh:/base \
+/home/data/shared/SingularityImages/freesurfer_8.0.0_20250210.simg \
+mris_convert /base/sub-${SUBJ_NUM_4D}/surf/rh.pial /base/sub-${SUBJ_NUM_4D}/surf/rh.stl
+
+singularity run -B /archival/projects/SPLaT/data/mesh:/base \
+/home/data/shared/SingularityImages/freesurfer_8.0.0_20250210.simg \
+mris_convert /base/sub-${SUBJ_NUM_4D}/surf/lh.pial /base/sub-${SUBJ_NUM_4D}/surf/lh.stl
