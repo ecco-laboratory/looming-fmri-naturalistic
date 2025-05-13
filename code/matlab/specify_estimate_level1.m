@@ -82,11 +82,11 @@ if contains(out_path, "controlled")
     consess{1}.tcon.name = 'attend_animal';                                                                                                            
     consess{1}.tcon.weights = contains(designmat_names, "animal") - contains(designmat_names, "hemifield");
     consess{2}.tcon.name = 'dog';
-    consess{2}.tcon.weights = contains(designmat_names, "dog") - (contains(designmat_names, "frog") + contains(designmat_names, "spider"));
+    consess{2}.tcon.weights = contains(designmat_names, "dog") - (contains(designmat_names, "frog") + contains(designmat_names, "spider"))/2;
     consess{3}.tcon.name = 'frog';
-    consess{3}.tcon.weights = contains(designmat_names, "frog") - (contains(designmat_names, "dog") + contains(designmat_names, "spider"));
+    consess{3}.tcon.weights = contains(designmat_names, "frog") - (contains(designmat_names, "dog") + contains(designmat_names, "spider"))/2;
     consess{4}.tcon.name = 'spider';
-    consess{4}.tcon.weights = contains(designmat_names, "spider") - (contains(designmat_names, "dog") + contains(designmat_names, "frog"));
+    consess{4}.tcon.weights = contains(designmat_names, "spider") - (contains(designmat_names, "dog") + contains(designmat_names, "frog"))/2;
     consess{5}.tcon.name = 'above';
     consess{5}.tcon.weights = contains(designmat_names, "above") - contains(designmat_names, "below");
     consess{6}.tcon.name = 'looming';
@@ -100,19 +100,23 @@ if contains(out_path, "controlled")
     consess{9}.tcon.name = 'ratings';
     consess{9}.tcon.weights = double(contains(designmat_names, "ratings"));
 elseif contains(out_path, "naturalistic")
-    consess = cell(1, 6);
+    consess = cell(1, 8);
     consess{1}.tcon.name = 'dog';
-    consess{1}.tcon.weights = contains(designmat_names, "dog") - (contains(designmat_names, "frog") + contains(designmat_names, "spider"));
-    consess{2}.tcon.name = 'frog';
-    consess{2}.tcon.weights = contains(designmat_names, "frog") - (contains(designmat_names, "dog") + contains(designmat_names, "spider"));
-    consess{3}.tcon.name = 'spider';
-    consess{3}.tcon.weights = contains(designmat_names, "spider") - (contains(designmat_names, "dog") + contains(designmat_names, "frog"));
-    consess{4}.tcon.name = 'looming';
-    consess{4}.tcon.weights = contains(designmat_names, "loom1") - contains(designmat_names, "loom0");
-    consess{5}.tcon.name = 'looming_baseline';
-    consess{5}.tcon.weights = double(contains(designmat_names, "loom1"));
-    consess{6}.tcon.name = 'stimuli';
-    consess{6}.tcon.weights = contains(designmat_names, "loom1") + contains(designmat_names, "loom0");
+    consess{1}.tcon.weights = contains(designmat_names, "dog") - (contains(designmat_names, "cat") + contains(designmat_names, "frog") + contains(designmat_names, "spider") + contains(designmat_names, "food"))/4;
+    consess{2}.tcon.name = 'cat';
+    consess{2}.tcon.weights = contains(designmat_names, "cat") - (contains(designmat_names, "dog") + contains(designmat_names, "frog") + contains(designmat_names, "spider") + contains(designmat_names, "food"))/4;
+    consess{3}.tcon.name = 'frog';
+    consess{3}.tcon.weights = contains(designmat_names, "frog") - (contains(designmat_names, "dog") + contains(designmat_names, "cat") + contains(designmat_names, "spider") + contains(designmat_names, "food"))/4;
+    consess{4}.tcon.name = 'spider';
+    consess{4}.tcon.weights = contains(designmat_names, "spider") - (contains(designmat_names, "dog") + contains(designmat_names, "cat") + contains(designmat_names, "frog") + contains(designmat_names, "food"))/4;
+    consess{5}.tcon.name = 'food';
+    consess{5}.tcon.weights = contains(designmat_names, "food") - ( + contains(designmat_names, "dog") + contains(designmat_names, "cat") + contains(designmat_names, "frog") + contains(designmat_names, "spider"))/4;
+    consess{6}.tcon.name = 'looming';
+    consess{6}.tcon.weights = contains(designmat_names, "loom1") - contains(designmat_names, "loom0");
+    consess{7}.tcon.name = 'looming_baseline';
+    consess{7}.tcon.weights = double(contains(designmat_names, "loom1"));
+    consess{8}.tcon.name = 'stimuli';
+    consess{8}.tcon.weights = contains(designmat_names, "loom1") + contains(designmat_names, "loom0");
 end
 % set the sessrep field as 'none' for all of them
 % because the same exact conditions don't appear in every run

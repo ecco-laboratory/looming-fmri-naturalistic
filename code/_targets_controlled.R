@@ -26,7 +26,7 @@ tar_option_set(
       script_lines = "#SBATCH --account=default",
       log_output = "/home/%u/log/crew_log_%A.out",
       log_error = "/home/%u/log/crew_log_%A.err",
-      memory_gigabytes_required = 8,
+      memory_gigabytes_required = 16,
       cpus_per_task = 1,
       time_minutes = 1339,
       partition = "day-long"
@@ -408,7 +408,8 @@ targets_qc <- list(
 # that way, only subjects manually approved will be included in these analyses
 participants <- inject(here::here(!!!path_here_fmri, "participants.tsv")) %>% 
   read_tsv() %>% 
-  filter(group == "use") %>% 
+  # 2025-05-13: Temporarily hard filter out anyone who didn't complete all 5 runs
+  filter(group == "use", participant_id != "sub-0039") %>% 
   select(subject = participant_id)
 
 # attention! this is the innermost tar_map, which defines RUN-UNIQUE targets
@@ -441,10 +442,6 @@ targets_fmri_by.subject <- make_targets_fmri_by.subject(participants,
 # starting now, it's okay to tar_eval because we are now at the highest level
 targets_fmri_across.subject <- make_targets_fmri_across.subject(targets_fmri_by.subject,
                                                                 contrast_names)
-
-### canlabtools-based group analyses so help me god ----
-
-## targets: splitting by parcel ROI (for whole-brainy analyses) ----
 
 ## targets for in-scanner behavioral data ----
 

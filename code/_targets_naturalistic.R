@@ -22,14 +22,14 @@ tar_option_set(
                "rlang",
                "qualtRics"), # packages that your targets need to run
   controller = crew.cluster::crew_controller_slurm(
-    workers = 16,
+    workers = 8,
     seconds_idle = 30,
     options_cluster = crew.cluster::crew_options_slurm(
       verbose = TRUE,
       script_lines = "#SBATCH --account=default",
       log_output = "/home/%u/log/crew_log_%A.out",
       log_error = "/home/%u/log/crew_log_%A.err",
-      memory_gigabytes_required = 8,
+      memory_gigabytes_required = 32,
       cpus_per_task = 1,
       time_minutes = 1339,
       partition = "day-long"
@@ -269,8 +269,10 @@ targets_fmri_by.run <- make_targets_fmri_by.run(n_runs = task_defaults_list$n_ru
                                                 additional_targets = subtargets_encoding.timecourses_by.run)
 
 contrast_names <- c("dog",
+                    "cat",
                     "frog",
                     "spider",
+                    "food",
                     "looming",
                     "looming.baseline",
                     "stimuli")
@@ -909,7 +911,7 @@ subtargets_fmri_canlabtools_combined <- list(
   )
 )
 
-#### overall summary stat targets ----
+## overall summary stat targets ----
 
 summary_funs_bootstrap <- list(mean = \(x) mean(x, na.rm = TRUE),
                                sd = \(x) sd(x, na.rm = TRUE),
@@ -917,6 +919,19 @@ summary_funs_bootstrap <- list(mean = \(x) mean(x, na.rm = TRUE),
                                ci95.upper = \(x) quantile(x, .975, na.rm = TRUE))
 
 subtargets_fmri_summary <- list(
+  tar_map(
+    values = tibble(rating_type = c("pleasantness", "arousal", "fear")),
+    tar_target(name = anova_beh,
+               command = beh %>% 
+                 filter(animal_type != "food") %>% 
+                 # grand mean center it
+                 mutate(animal_type = factor(animal_type, levels = c("dog", "cat", "frog", "spider"))) %>% 
+                 rename(this_rating = paste0("rating_", rating_type)) %>% 
+                 group_by(subj_num, animal_type, has_loom) %>% 
+                 summarize(rating_mean = mean(this_rating)) %>% 
+                 lm(rating_mean ~ has_loom * animal_type, data = .) %>% 
+                 anova())
+  ),
   tar_target(name = summary_perf.encoding,
              command = perf.encoding_combined %>% 
                group_by(roi, encoding_type) %>% 
@@ -1050,9 +1065,21 @@ subtargets_fmri_summary <- list(
   tar_target(name = summary_encoding.discrim.looming_by.category_sc,
              command = {
                flynet <- calc_perm_pval_object_by_pattern(preds = encoding.object_2cat_events.endspike_flynet.only_sc, 
-                                                          perms = perm.acc_by._encoding.object_2cat_events.endspike_flynet.only_sc)
+                                                          perms = perm.acc_by.object_encoding.object_2cat_events.endspike_flynet.only_sc,
+                                                          grouping_cols = animal_type)
                alexnet <- calc_perm_pval_object_by_pattern(preds = encoding.object_2cat_events.endspike_alexnet.only_sc, 
-                                                           perms = perm.acc_encoding.object_2cat_events.endspike_alexnet.only_sc)
+                                                           perms = perm.acc_by.object_encoding.object_2cat_events.endspike_alexnet.only_sc,
+                                                           grouping_cols = animal_type)
+               bind_rows(flynet = flynet,
+                         alexnet = alexnet,
+                         .id = "encoding_type")
+             }),
+  tar_target(name = summary_encoding.discrim.object_sc,
+             command = {
+               flynet <- calc_perm_pval_object_by_pattern(preds = encoding.object_5cat_events.endspike_flynet.only_sc, 
+                                                          perms = perm.acc_encoding.object_5cat_events.endspike_flynet.only_sc)
+               alexnet <- calc_perm_pval_object_by_pattern(preds = encoding.object_5cat_events.endspike_alexnet.only_sc, 
+                                                           perms = perm.acc_encoding.object_5cat_events.endspike_alexnet.only_sc)
                bind_rows(flynet = flynet,
                          alexnet = alexnet,
                          .id = "encoding_type")
