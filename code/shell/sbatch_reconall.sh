@@ -32,3 +32,5 @@ mris_convert /base/sub-${SUBJ_NUM_4D}/surf/rh.pial /base/sub-${SUBJ_NUM_4D}/surf
 singularity run -B /archival/projects/SPLaT/data/mesh:/base \
 /home/data/shared/SingularityImages/freesurfer_8.0.0_20250210.simg \
 mris_convert /base/sub-${SUBJ_NUM_4D}/surf/lh.pial /base/sub-${SUBJ_NUM_4D}/surf/lh.stl
+
+/home/data/eccolab/CondaEnvs/pymeshlab/bin/python /home/data/eccolab/SPLaT_fMRI/code/python/combine_downsample_recon_mesh.py --subject $SLURM_ARRAY_TASK_ID
