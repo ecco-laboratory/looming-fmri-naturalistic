@@ -109,7 +109,7 @@ make_targets_fmri_by.subject <- function(df_participants, targets_by.run, contra
                format = "file"),
     ### readably named contrast targets by subject ----
     # defining contrasts individually (CRY) so that we can keep them accessible through one level of tar_map nesting
-    make_contrast_targets_by.subject(spm.level1.endspike, contrast_names, "boxcar"),
+    make_contrast_targets_by.subject(spm.level1.boxcar, contrast_names, "boxcar"),
     make_contrast_targets_by.subject(spm.level1.endspike, contrast_names, "endspike"),
     additional_targets,
     names = subject
@@ -134,8 +134,6 @@ make_contrast_targets_by.subject <- function (level1, contrast_names, model_type
 
 make_targets_fmri_across.subject <- function (targets_by.subject, contrast_names, task = "controlled", additional_targets = NULL) {
   
-  task_bids <- paste0("task-", task)
-  
   list(
     targets_by.subject,
     tar_eval(
@@ -158,7 +156,10 @@ make_targets_fmri_across.subject <- function (targets_by.subject, contrast_names
       values = crossing(contrast = contrast_names,
                         model_type = c("boxcar", "endspike")) %>% 
         mutate(target_name = syms(paste("level2", contrast, model_type, sep = ".")),
-               input_name = syms(paste("con", contrast, model_type, sep = ".")))
+               input_name = syms(paste("con", contrast, model_type, sep = ".")),
+               # it doesn't actually vary across the rows but tar_eval is not receiving vars set in the global env
+               # so this is a quick way to get the task info into the call, I hope
+               task_bids = paste0("task-", task))
     ),
     additional_targets
   )
