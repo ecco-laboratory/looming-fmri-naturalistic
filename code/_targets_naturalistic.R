@@ -71,6 +71,14 @@ task_defaults_list <- jsonlite::read_json(here::here("task_defaults.json"), simp
 # the script targets are defined externally so this can be called in both targets pipelines
 source("code/R/define-targets-scripts.R")
 
+targets_scripts_naturalistic <- list(
+  tar_target(
+    name = matlab_spmbatch_contrast_level1,
+    command = here::here("code", "matlab", "calc_contrasts_level1_naturalistic.m"),
+    format = "file"
+  )
+)
+
 ## targets: looming stimuli of various kinds ----
 
 folder_videos <- here::here("ignore", "stimuli", "videos", "naturalistic")
@@ -1576,6 +1584,7 @@ targets_figs.rdm <- list(
 
 list(
   targets_scripts,
+  targets_scripts_naturalistic,
   targets_stimuli,
   targets_stimlists,
   targets_encoding.models,

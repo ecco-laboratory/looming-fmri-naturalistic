@@ -76,47 +76,12 @@ designmat_names = convertCharsToStrings(SPM.xX.name);
 % currently not doing any f-contrasts 
 % but if you were it would have to be a squarish matrix with a 1 for each stim condition
 
+% Also, make contrasts for loom x animal vs baseline to average over spatial location for testing naturalistic encoding models on controlled betas
 if contains(out_path, "controlled")
     % important that these are strings defined with double quotes
-    consess = cell(1, 9);
-    consess{1}.tcon.name = 'attend_animal';                                                                                                            
-    consess{1}.tcon.weights = contains(designmat_names, "animal") - contains(designmat_names, "hemifield");
-    consess{2}.tcon.name = 'dog';
-    consess{2}.tcon.weights = contains(designmat_names, "dog") - (contains(designmat_names, "frog") + contains(designmat_names, "spider"))/2;
-    consess{3}.tcon.name = 'frog';
-    consess{3}.tcon.weights = contains(designmat_names, "frog") - (contains(designmat_names, "dog") + contains(designmat_names, "spider"))/2;
-    consess{4}.tcon.name = 'spider';
-    consess{4}.tcon.weights = contains(designmat_names, "spider") - (contains(designmat_names, "dog") + contains(designmat_names, "frog"))/2;
-    consess{5}.tcon.name = 'above';
-    consess{5}.tcon.weights = contains(designmat_names, "above") - contains(designmat_names, "below");
-    consess{6}.tcon.name = 'looming';
-    consess{6}.tcon.weights = contains(designmat_names, "looming") - contains(designmat_names, "receding");
-    consess{7}.tcon.name = 'looming_baseline';
-    % the others get converted to double by being mathed
-    % if no math, must manually convert
-    consess{7}.tcon.weights = double(contains(designmat_names, "looming"));
-    consess{8}.tcon.name = 'stimuli';
-    consess{8}.tcon.weights = contains(designmat_names, "looming") + contains(designmat_names, "receding");
-    consess{9}.tcon.name = 'ratings';
-    consess{9}.tcon.weights = double(contains(designmat_names, "ratings"));
+    consess = calc_contrasts_level1_controlled(designmat_names);
 elseif contains(out_path, "naturalistic")
-    consess = cell(1, 8);
-    consess{1}.tcon.name = 'dog';
-    consess{1}.tcon.weights = contains(designmat_names, "dog") - (contains(designmat_names, "cat") + contains(designmat_names, "frog") + contains(designmat_names, "spider") + contains(designmat_names, "food"))/4;
-    consess{2}.tcon.name = 'cat';
-    consess{2}.tcon.weights = contains(designmat_names, "cat") - (contains(designmat_names, "dog") + contains(designmat_names, "frog") + contains(designmat_names, "spider") + contains(designmat_names, "food"))/4;
-    consess{3}.tcon.name = 'frog';
-    consess{3}.tcon.weights = contains(designmat_names, "frog") - (contains(designmat_names, "dog") + contains(designmat_names, "cat") + contains(designmat_names, "spider") + contains(designmat_names, "food"))/4;
-    consess{4}.tcon.name = 'spider';
-    consess{4}.tcon.weights = contains(designmat_names, "spider") - (contains(designmat_names, "dog") + contains(designmat_names, "cat") + contains(designmat_names, "frog") + contains(designmat_names, "food"))/4;
-    consess{5}.tcon.name = 'food';
-    consess{5}.tcon.weights = contains(designmat_names, "food") - ( + contains(designmat_names, "dog") + contains(designmat_names, "cat") + contains(designmat_names, "frog") + contains(designmat_names, "spider"))/4;
-    consess{6}.tcon.name = 'looming';
-    consess{6}.tcon.weights = contains(designmat_names, "loom1") - contains(designmat_names, "loom0");
-    consess{7}.tcon.name = 'looming_baseline';
-    consess{7}.tcon.weights = double(contains(designmat_names, "loom1"));
-    consess{8}.tcon.name = 'stimuli';
-    consess{8}.tcon.weights = contains(designmat_names, "loom1") + contains(designmat_names, "loom0");
+    consess = calc_contrasts_level1_naturalistic(designmat_names);
 end
 % set the sessrep field as 'none' for all of them
 % because the same exact conditions don't appear in every run

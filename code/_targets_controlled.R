@@ -19,14 +19,15 @@ tar_option_set(
                "rlang",
                "qualtRics"), # packages that your targets need to run
   controller = crew.cluster::crew_controller_slurm(
-    workers = 16,
+    workers = 8,
     seconds_idle = 15,
     options_cluster = crew.cluster::crew_options_slurm(
       verbose = TRUE,
       script_lines = "#SBATCH --account=default",
       log_output = "/home/%u/log/crew_log_%A.out",
       log_error = "/home/%u/log/crew_log_%A.err",
-      memory_gigabytes_required = 16,
+      # single subject level 1s require 32 GB to run more than snail's pace?
+      memory_gigabytes_required = 32,
       cpus_per_task = 1,
       time_minutes = 1339,
       partition = "day-long"
@@ -75,6 +76,14 @@ task_defaults_list <- jsonlite::read_json(here::here("task_defaults.json"), simp
 
 # the script targets are defined externally so this can be called in both targets pipelines
 source("code/R/define-targets-scripts.R")
+
+targets_scripts_controlled <- list(
+  tar_target(
+    name = matlab_spmbatch_contrast_level1,
+    command = here::here("code", "matlab", "calc_contrasts_level1_controlled.m"),
+    format = "file"
+  )
+)
 
 ## targets: looming stimuli of various kinds ----
 
@@ -417,6 +426,8 @@ targets_fmri_by.run <- make_targets_fmri_by.run(n_runs = task_defaults_list$n_ru
 
 # fmri targets: middle tar_map by subject ----
 
+## SPM level 1 inputs and models ----
+
 # the order MATTERS!
 contrast_names <- c("attend.animal",
                     "dog",
@@ -425,6 +436,12 @@ contrast_names <- c("attend.animal",
                     "above",
                     "looming",
                     "looming.baseline",
+                    "looming.dog.baseline",
+                    "looming.frog.baseline",
+                    "looming.spider.baseline",
+                    "receding.dog.baseline",
+                    "receding.frog.baseline",
+                    "receding.spider.baseline",
                     "stimuli",
                     "ratings")
 
@@ -499,6 +516,7 @@ targets_figs <- list(
 
 list(
   targets_scripts,
+  targets_scripts_controlled,
   targets_stimuli,
   targets_stimlists,
   targets_encoding.models,

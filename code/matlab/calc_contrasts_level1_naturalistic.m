@@ -1,0 +1,19 @@
+function contrasts = calc_contrasts_level1_naturalistic(condition_names)
+    contrasts = cell(1, 8);
+    contrasts{1}.tcon.name = 'dog';
+    contrasts{1}.tcon.weights = contains(condition_names, "dog") - (contains(condition_names, "cat") + contains(condition_names, "frog") + contains(condition_names, "spider") + contains(condition_names, "food"))/4;
+    contrasts{2}.tcon.name = 'cat';
+    contrasts{2}.tcon.weights = contains(condition_names, "cat") - (contains(condition_names, "dog") + contains(condition_names, "frog") + contains(condition_names, "spider") + contains(condition_names, "food"))/4;
+    contrasts{3}.tcon.name = 'frog';
+    contrasts{3}.tcon.weights = contains(condition_names, "frog") - (contains(condition_names, "dog") + contains(condition_names, "cat") + contains(condition_names, "spider") + contains(condition_names, "food"))/4;
+    contrasts{4}.tcon.name = 'spider';
+    contrasts{4}.tcon.weights = contains(condition_names, "spider") - (contains(condition_names, "dog") + contains(condition_names, "cat") + contains(condition_names, "frog") + contains(condition_names, "food"))/4;
+    contrasts{5}.tcon.name = 'food';
+    contrasts{5}.tcon.weights = contains(condition_names, "food") - ( + contains(condition_names, "dog") + contains(condition_names, "cat") + contains(condition_names, "frog") + contains(condition_names, "spider"))/4;
+    contrasts{6}.tcon.name = 'looming';
+    contrasts{6}.tcon.weights = contains(condition_names, "loom1") - contains(condition_names, "loom0");
+    contrasts{7}.tcon.name = 'looming_baseline';
+    contrasts{7}.tcon.weights = double(contains(condition_names, "loom1"));
+    contrasts{8}.tcon.name = 'stimuli';
+    contrasts{8}.tcon.weights = contains(condition_names, "loom1") + contains(condition_names, "loom0");
+end
