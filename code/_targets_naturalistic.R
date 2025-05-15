@@ -29,7 +29,7 @@ tar_option_set(
       script_lines = "#SBATCH --account=default",
       log_output = "/home/%u/log/crew_log_%A.out",
       log_error = "/home/%u/log/crew_log_%A.err",
-      memory_gigabytes_required = 32,
+      memory_gigabytes_required = 8,
       cpus_per_task = 1,
       time_minutes = 1339,
       partition = "day-long"
@@ -919,6 +919,56 @@ subtargets_fmri_canlabtools_combined <- list(
   )
 )
 
+## targets imported from the controlled task ----
+# these do NOT auto update when new subjects are processed for naturalistic
+# you must tar_make the original controlled targets for that tracking
+#  but if you do tar_make controlled, then the correct naturalistic dependency targets will be marked as out of date
+
+metadata_videos_nback <- tar_read(metadata_videos_nback, store = here::here("ignore", "_targets", "controlled"))
+
+targets_controlled <- list(
+  tar_target(activations.flynet_raw_controlled,
+             command = here::here("ignore",
+                                  "data",
+                                  "encoding",
+                                  "activations.flynet_controlled.csv"),
+             format = "file"),
+  tar_target(activations.alexnet_raw_controlled,
+             command = here::here("ignore",
+                                  "data",
+                                  "encoding",
+                                  "activations.alexnet_controlled.csv"),
+             format = "file"),
+  tar_files(con.files_level1.5_controlled,
+            command = list.files(here::here("ignore", "data", "canlabtools"), 
+                                 pattern = "task-controlled_region-sc_con-.*ing\\..*\\.baseline.csv",
+                                 full.names = TRUE)),
+  tar_target(cons_level1.5_controlled,
+             command = {
+               file_path <- con.files_level1.5_controlled
+               condition <- file_path %>% 
+                 basename() %>% 
+                 str_split_i("-", -1) %>% 
+                 str_remove(".baseline.csv")
+               
+               read_csv(file_path, col_names = FALSE) %>% 
+                 mutate(condition = condition) %>% 
+                 separate_wider_delim(cols = condition, delim = ".", names = c("direction", "animal_type")) %>% 
+                 select(direction, animal_type, subj_num = X1, everything())
+               },
+             pattern = map(con.files_level1.5_controlled)),
+  tar_target(pattern.expression.controlled_flynet_sc,
+             command = calc_controlled_pattern_expression(cons_level1.5_controlled,
+                                                          activations.flynet_raw_controlled,
+                                                          metadata_videos_nback,
+                                                          betas.encoding.xval_flynet.only_sc)),
+  tar_target(pattern.expression.controlled_alexnet_sc,
+             command = calc_controlled_pattern_expression(cons_level1.5_controlled,
+                                                          activations.alexnet_raw_controlled,
+                                                          metadata_videos_nback,
+                                                          betas.encoding.xval_alexnet.only_sc))
+)
+
 ## overall summary stat targets ----
 
 summary_funs_bootstrap <- list(mean = \(x) mean(x, na.rm = TRUE),
@@ -1590,6 +1640,7 @@ list(
   targets_encoding.models,
   targets_qc,
   targets_fmri_across.subject,
+  targets_controlled,
   targets_beh,
   targets_plots,
   targets_figs,

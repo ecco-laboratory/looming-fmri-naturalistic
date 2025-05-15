@@ -155,7 +155,7 @@ make_contrast_targets_by.subject <- function (level1, contrast_names, model_type
   out <- list()
   for (i in 1:length(contrast_names)) {
     out <- c(out,
-             tar_target_raw(name = paste("con", contrast_names[i], model_type, sep = "."),
+             tar_target_raw(name = paste("con", contrast_names[i], model_type, sep = "_"),
                             command = expr(get_spm_level1_contrast(!!level1, !!i)),
                             format = "file"))
   }
@@ -170,14 +170,17 @@ make_targets_fmri_across.subject <- function (targets_by.subject, contrast_names
     these_model_types <- c("endspike", "boxcar")
   }
   
+  eval_values <- crossing(contrast = contrast_names,
+                          model_type = these_model_types)
+  # these have to be separate tar_evals because tar_combine always evaluates the targets to combine immediately
+  # so tar_combine can't choose the target to combine from a value in tar_map
   out <- list(
     targets_by.subject,
     tar_eval(
       expr = tar_combine_raw(name = target_name,
                              targets_by.subject[[target_name]]),
-      values = crossing(target_name = contrast_names,
-                        model_type = these_model_types) %>% 
-        mutate(target_name = paste("con", target_name, model_type, sep = "."))
+      values = eval_values %>% 
+        mutate(target_name = paste("con", contrast, model_type, sep = "_"))
     ),
     tar_eval(
       tar_target(
@@ -189,10 +192,9 @@ make_targets_fmri_across.subject <- function (targets_by.subject, contrast_names
                                       script = matlab_spmbatch_spec_est_level2),
         format = "file"
       ),
-      values = crossing(contrast = contrast_names,
-                        model_type = these_model_types) %>% 
-        mutate(target_name = syms(paste("level2", contrast, model_type, sep = ".")),
-               input_name = syms(paste("con", contrast, model_type, sep = ".")),
+      values = eval_values %>% 
+        mutate(target_name = syms(paste("level2", contrast, model_type, sep = "_")),
+               input_name = syms(paste("con", contrast, model_type, sep = "_")),
                # it doesn't actually vary across the rows but tar_eval is not receiving vars set in the global env
                # so this is a quick way to get the task info into the call, I hope
                task_bids = paste0("task-", task))

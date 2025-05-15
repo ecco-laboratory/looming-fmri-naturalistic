@@ -54,17 +54,73 @@ summarize_tvals_pre_statmap <- function (in_data_1, in_data_2 = NULL, fun_compar
 
 ## modeling other stuff as a function of main fMRI encoding model preds ----
 
+### testing naturalistic encoding model-predicted pattern on controlled task betas ----
+
+calc_controlled_pattern_expression <- function (patterns_controlled,
+                                                path_activations_controlled,
+                                                metadata_controlled,
+                                                path_betas_encoding) {
+  
+  activations <- read_csv(path_activations_controlled) %>% 
+    right_join(metadata_controlled %>% 
+                 select(filename, animal_type, direction),
+               by = c("video" = "filename")) %>% 
+    # average over videos within animal x direction condition
+    # bc the controlled beta patterns are only at that resolution
+    group_by(animal_type, direction, frame) %>% 
+    summarize(across(where(is.numeric), mean), .groups = "drop") %>% 
+    # from here on out you better not do anything to reorder the rows
+    select(-frame) %>% 
+    nest(.by = c(animal_type, direction), .key = "activations") %>% 
+    mutate(activations = map(activations, as.matrix))
+  
+  betas_encoding <- read_csv(path_betas_encoding, col_names = FALSE) %>% 
+    rename(subj_num = X1) %>% 
+    nest(.by = subj_num, .key = "betas") %>% 
+    mutate(betas = map(betas, \(x) slice_tail(x, n=nrow(x)-1)),
+           betas = map(betas, as.matrix))
+  
+  pattern_mean <- patterns_controlled %>% 
+    select(starts_with("X")) %>% 
+    as.matrix() %>% 
+    mean()
+  
+  pattern_sd <- patterns_controlled %>% 
+    select(starts_with("X")) %>% 
+    as.matrix() %>% 
+    sd()
+  
+  patterns <- patterns_controlled %>% 
+    # so we can scale all the contrast values but not break the spatial relationship between voxel columns
+    mutate(across(starts_with("X"), \(x) (x - pattern_mean)/pattern_sd)) %>% 
+    nest(.by = c(subj_num, animal_type, direction), .key = "pattern") %>% 
+    left_join(activations, by = c("animal_type", "direction")) %>% 
+    left_join(betas_encoding, by = "subj_num") %>% 
+    mutate(pattern = map(pattern, unlist),
+           # colMeans on the product will mean over video frame in the rows
+           pattern_pred = map2(activations, betas, \(x, y) colMeans(x %*% y)),
+           pattern_expression = map2_dbl(pattern_pred, pattern, \(x, y) x %*% y))
+  
+  return (patterns)
+}
+
+### classifying human-labeled stimulus category by encoding model-predicted pattern ----
 calc_perm_pval_object_by_pattern <- function (preds, perms, grouping_cols = NULL) {
-  # grouping_cols <- enquos(grouping_cols)
+  
+  grouping_cols <- enquo(grouping_cols)
   acc_true <- preds %>% 
     select(preds) %>% 
     unnest(preds) %>% 
-    calc_metrics_nested_classprobs(grouping_cols = grouping_cols)
+    calc_metrics_nested_classprobs(grouping_cols = !!grouping_cols)
+  
+  # don't need this until a few lines down but do it before I quote the argument
+  join_by_cols <- c(".metric", ".estimator")
+  if (!quo_is_null(grouping_cols)) join_by_cols <- c(join_by_cols, quo_name(grouping_cols))
   
   out <- perms %>% 
     unnest(acc_perm) %>% 
-    left_join(acc_true, by = c(".metric", ".estimator"), suffix = c("_perm", "_real")) %>% 
-    group_by(.metric, pick({{grouping_cols}})) %>% 
+    left_join(acc_true, by = join_by_cols, suffix = c("_perm", "_real")) %>% 
+    group_by(.metric, pick(!!grouping_cols)) %>% 
     summarize(estimate = unique(.estimate_real),
               pval = (sum(.estimate_perm > .estimate_real)+1)/(n()+1))
   
@@ -73,13 +129,14 @@ calc_perm_pval_object_by_pattern <- function (preds, perms, grouping_cols = NULL
 
 permute_acc_object_by_pattern <- function (preds, n_perms, outcome_categories = c("object", "looming", "object_looming"), acc_grouping_cols = NULL) {
   stopifnot(length(outcome_categories) == 1)
+  acc_grouping_cols <- enquo(acc_grouping_cols)
   
   out <- preds %>% 
     # keep only cols required for computing accuracy
-    select(subj_num, run_num, {{acc_grouping_cols}}, .obs, .preds, .pred) %>% 
+    select(subj_num, run_num, !!acc_grouping_cols, .obs, .preds, .pred) %>% 
     # nest blocks that will be kept together in permuting
     # TODO: below line needs fixing to keep acc_grouping_cols
-    nest(obs = .obs, pred = c({{acc_grouping_cols}}, .preds, .pred), .by = c(subj_num, run_num)) %>% 
+    nest(obs = .obs, pred = c(!!acc_grouping_cols, .preds, .pred), .by = c(subj_num, run_num)) %>% 
     # the n_trs stuff is to shorten all "runs" to the shortest one so that the permuted TR vectors will be the same length
     # because omitting the fixation TRs causes the runs no longer to have the same amount of data within or between subject
     mutate(n_trs = map_int(obs, nrow)) %>% 
@@ -111,7 +168,7 @@ permute_acc_object_by_pattern <- function (preds, n_perms, outcome_categories = 
   
   out %<>% 
     # now compute permuted accuracy & AUROC metrics
-    mutate(acc_perm = map(data, \(x) calc_metrics_nested_classprobs(x, grouping_cols = acc_grouping_cols), 
+    mutate(acc_perm = map(data, \(x) calc_metrics_nested_classprobs(x, grouping_cols = !!acc_grouping_cols), 
                           .progress = "calculating perm-wise acc")) %>% 
     # drop the actual permuted data for space saving
     select(-data)
@@ -120,9 +177,11 @@ permute_acc_object_by_pattern <- function (preds, n_perms, outcome_categories = 
 }
 
 calc_metrics_nested_classprobs <- function (preds, grouping_cols = NULL, classprob_prefix = ".pred_outcome") {
+  grouping_cols <- enquo(grouping_cols)
+  
   preds %>% 
     unnest_wider(col = .preds) %>% 
-    group_by(pick({{grouping_cols}})) %>% 
+    group_by(pick(!!grouping_cols)) %>% 
     metrics(truth = .obs, estimate = .pred, starts_with(classprob_prefix))
 }
 

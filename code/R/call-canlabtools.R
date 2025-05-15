@@ -143,6 +143,24 @@ canlabtools_fit_encoding_pls <- function (out_path_perf,
   return (out)
 }
 
+canlabtools_combine_mask_betas <- function (out_path,
+                                            betas,
+                                            roi = "Bstem_SC",
+                                            script = matlab_combine_mask_betas) {
+  
+  matlab_commands = c(
+    assign_variable("out_path", out_path),
+    # this expects a cell array of chars, one for each subject
+    rvec_to_matlabcell(betas, matname = "paths_nifti"),
+    rvec_to_matlabcell(roi, matname = "region"),
+    call_script(script)
+  )
+  
+  out <- run_matlab_target(matlab_commands, out_path, matlab_path)
+  return (out)
+}
+
+
 canlabtools_mask_fmri_data <- function (out_path,
                                         tr_duration,
                                         trs_to_use,

@@ -272,3 +272,10 @@ plot_encoding_selfreport_pcor <- function (summary_pcor) {
     labs(x = sprintf("Partial \U03C1 \U00B1 95%% CI"), 
          y = NULL)
 }
+
+plot_encoding_controlled_flynet <- function (pattern_expressions) {
+  pattern_expressions %>% 
+    ggplot(aes(x = animal_type, y = pattern_expression, fill = direction)) + 
+    geom_boxplot() + 
+    geom_hline(yintercept = 0, linetype = "dotted")
+}

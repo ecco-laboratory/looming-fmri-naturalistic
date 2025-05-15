@@ -27,7 +27,7 @@ tar_option_set(
       log_output = "/home/%u/log/crew_log_%A.out",
       log_error = "/home/%u/log/crew_log_%A.err",
       # single subject level 1s require 32 GB to run more than snail's pace?
-      memory_gigabytes_required = 32,
+      memory_gigabytes_required = 16,
       cpus_per_task = 1,
       time_minutes = 1339,
       partition = "day-long"
@@ -46,13 +46,15 @@ options(clustermq.template = "clustermq.tmpl")
 
 # Run the R scripts in the R/ folder with your custom functions:
 tar_source(c("code/R/utils/",
+             "code/R/parse-demos.R",
              "code/R/make-stimlist.R",
              "code/R/call-activations.R",
              "code/R/define-targets-fmri.R",
              "code/R/parse-events.R",
              "code/R/parse-confounds.R",
              "code/R/parse-bold.R",
-             "code/R/call-spm.R"))
+             "code/R/call-spm.R",
+             "code/R/call-canlabtools.R"))
 # Regular source this script because it's not called by a target per se
 # but is necessary for target construction
 # source("code/R/set-study-defaults.R")
@@ -81,6 +83,11 @@ targets_scripts_controlled <- list(
   tar_target(
     name = matlab_spmbatch_contrast_level1,
     command = here::here("code", "matlab", "calc_contrasts_level1_controlled.m"),
+    format = "file"
+  ),
+  tar_target(
+    name = matlab_combine_mask_betas,
+    command = here::here("code", "matlab", "combine_mask_betas_canlabtools.m"),
     format = "file"
   )
 )
@@ -367,28 +374,7 @@ targets_demos <- list(
              command = here::here("ignore", "recruitment", "redcap_ids_run_20250110.csv"),
   ),
   tar_target(name = demos_nih,
-             command = read_csv(demos_raw) %>% 
-               # get rid of names asap so you don't look
-               select(redcap_id = "Record ID", 
-                      sex_birth = "Sex Assigned at Birth", 
-                      starts_with("Race")) %>% 
-               # keep only subjects who've participated
-               semi_join(read_csv(redcap_ids), by = c("redcap_id" = "Prescreen ID")) %>% 
-               # nest races together
-               pivot_longer(cols = starts_with("Race"), 
-                            names_to = "race", 
-                            values_to = "checked") %>% 
-               nest(races = -c(redcap_id, sex_birth)) %>% 
-               # keep only selected races
-               mutate(races = map(races, \(x) filter(x, checked == "Checked") %>% 
-                                    pull(race) %>% 
-                                    # strip off extra stuff from old col names
-                                    str_sub(start = 14L, end = -2L)), 
-                      n_races_checked = map_int(races, \(x) length(x)), 
-                      # patch in not reported if none checked
-                      races = map_if(races, n_races_checked == 0, \(x) list("Not reported"), .else = \(x) x), 
-                      # NIH doesn't let us report multiple races when people choose more than one
-                      race_nih = map_chr(races, \(x) if (length(x) > 1) "More than one race" else x))
+             command = read_proc_demos_nih(demos_raw, redcap_ids)
   )
 )
 
@@ -428,7 +414,7 @@ targets_fmri_by.run <- make_targets_fmri_by.run(n_runs = task_defaults_list$n_ru
 
 ## SPM level 1 inputs and models ----
 
-# the order MATTERS!
+# the order MATTERS! it must match the order of contrasts set in code/matlab/calc_contrasts_level1_controlled.m
 contrast_names <- c("attend.animal",
                     "dog",
                     "frog",
@@ -453,12 +439,28 @@ targets_fmri_by.subject <- make_targets_fmri_by.subject(participants,
 
 ## fmri targets: outer targets across subjects ----
 
+# these targets must be tar_eval'd because make_targets_fmri_across.subject uses tar_eval instead of tar_map to farm across group-level contrasts
+subtargets_fmri_across.subject <- list(
+  tar_eval(
+    tar_target(name = target_name,
+               command = canlabtools_combine_mask_betas(out_path = out_path,
+                                                        betas = input_name,
+                                                        script = matlab_combine_mask_betas),
+               format = "file"),
+    values = tibble(contrast = contrast_names) %>% 
+      mutate(target_name = syms(sprintf("con.masked.sc_%s_boxcar", contrast)),
+             input_name = syms(sprintf("con_%s_boxcar", contrast)),
+             out_path = here::here("ignore", "data", "canlabtools", sprintf("task-controlled_region-sc_con-%s.csv", contrast)))
+  )
+)
+
 ### SPM level 2 group analyses ----
 
 # attention! from here on out it's OUTER targets, which are aggregated ACROSS TASK
 # starting now, it's okay to tar_eval because we are now at the highest level
 targets_fmri_across.subject <- make_targets_fmri_across.subject(targets_fmri_by.subject,
-                                                                contrast_names)
+                                                                contrast_names,
+                                                                additional_targets = subtargets_fmri_across.subject)
 
 ## targets for in-scanner behavioral data ----
 
