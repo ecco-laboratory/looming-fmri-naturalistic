@@ -1,0 +1,175 @@
+---
+title: "Manuscript stats for naturalistic loom object fMRI"
+format: html
+---
+
+```{r setup, include=FALSE}
+require(targets)
+require(tidyverse)
+require(rlang)
+
+target_store <- here::here("ignore", "_targets", "naturalistic")
+```
+
+Only the hits! **No analyses should be run here outside of formatting numbers with significant figures. If it requires more transformation, it should be done in a parent target object.**
+
+## Demographics
+
+TODO: N, sex, gender, age
+
+```{r}
+participants <- inject(here::here(!!!path_here_fmri, "participants.tsv")) %>% 
+  read_tsv() %>% 
+  filter(group == "use") %>% 
+  rename(subject = participant_id, gender = sex)
+```
+
+N = `r nrow(participants)`
+
+```{r}
+participants %>% 
+  count(gender)
+```
+
+age, mean = `r round(mean(participants$age), 0)`, SD = `r round(sd(participants$age), 0)`
+
+## Straight up encoding model performance, cross-validated
+
+```{r}
+summary_perf.encoding <- tar_read(summary_perf.encoding, store = target_store) %>% 
+  filter(roi == "sc", encoding_type %in% c("flynet.only", "alexnet.only")) %>% 
+  select(encoding_type, starts_with("r_")) %>% 
+  mutate(encoding_type = str_remove(encoding_type, ".only"))
+
+summary_pcor.encoding <- tar_read(summary_pcor.encoding_flynet.alexnet_sc, store = target_store) %>% 
+  rename(encoding_type = term)
+```
+
+```{r}
+summary_perf.encoding %>% 
+  left_join(summary_pcor.encoding, by = "encoding_type") %>% 
+  select(-starts_with("r2")) %>% 
+  mutate(pct_independent = (pcor_mean / r_mean) * 100) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
+```
+```{r}
+tar_read(summary_perf.encoding_alexnet.minus.flynet, store = target_store) %>% 
+  filter(roi == "sc") %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
+```
+```{r figure-2a}
+knitr::include_graphics(tar_read(fig_ms_encoding.perf_flynet.alexnet_sc, store = target_store))
+```
+
+
+## Decoding human-labeled stimulus categories from encoding patterns
+
+```{r}
+tar_read(summary_encoding.discrim.looming_sc, store = target_store) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
+```
+
+```{r}
+tar_read(summary_encoding.discrim.looming_by.category_sc, store = target_store) %>% 
+  filter(.metric == "accuracy") %>% 
+  arrange(encoding_type, desc(estimate)) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
+```
+
+```{r figure-2b}
+knitr::include_graphics(tar_read(fig_ms_encoding.discrim.looming_acc, store = target_store))
+```
+
+```{r figure-supp-1}
+knitr::include_graphics(tar_read(fig_ms.supp_encoding.discrim.looming_by.category_acc, store = target_store))
+```
+
+```{r}
+tar_read(summary_encoding.discrim.object_sc, store = target_store) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
+```
+
+```{r figure-2c}
+knitr::include_graphics(tar_read(fig_ms_encoding.discrim.object_acc, store = target_store))
+```
+
+## AlexNet predictions on naturalistic stimuli (do AlexNet activations reflect ground-truth human-labeled animal content)
+
+```{r figure-supp-2}
+knitr::include_graphics(tar_read(fig_ms.supp_alexnet.guesses, store = target_store))
+```
+
+## Naturalistic encoding model performance on controlled beta maps
+
+```{r}
+tar_read(summary_cons_level1.5_controlled, store = target_store) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
+```
+
+```{r}
+tar_read(summary_pattern.expression.controlled_flynet_sc, store = target_store) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
+```
+```{r figure-2d}
+knitr::include_graphics(tar_read(fig_ms_pattern.expression.controlled_flynet, store = target_store))
+```
+
+## Self report
+
+```{r figure-4a}
+knitr::include_graphics(tar_read(fig_ms_ratings, store = target_store))
+```
+
+### ANOVA self report by stimulus labels
+
+```{r}
+tar_read(anova_beh_pleasantness, store = target_store) %>% 
+  broom.mixed::tidy() %>% 
+  mutate(across(c(sumsq, meansq), \(x) round(x, digits = 0)),
+         across(c(statistic, p.value), \(x) signif(x, digits = 3)))
+```
+
+```{r}
+tar_read(anova_beh_arousal, store = target_store) %>% 
+  broom.mixed::tidy() %>% 
+  mutate(across(c(sumsq, meansq), \(x) round(x, digits = 0)),
+         across(c(statistic, p.value), \(x) signif(x, digits = 3)))
+```
+
+```{r}
+tar_read(anova_beh_fear, store = target_store) %>% 
+  broom.mixed::tidy() %>% 
+  mutate(across(c(sumsq, meansq), \(x) round(x, digits = 0)),
+         across(c(statistic, p.value), \(x) signif(x, digits = 3)))
+```
+
+### partial correlations of encoding patterns predicting self-report
+
+```{r}
+summary_encoding.selfreport_pcor <- tar_read(summary_encoding.selfreport_sc_pcor, store = target_store) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
+```
+
+```{r}
+summary_encoding.selfreport_pcor %>% 
+  filter(data_subset == "overall") %>%
+  arrange(term) %>% 
+  select(-data_subset)
+```
+
+```{r figure-4b}
+knitr::include_graphics(tar_read(fig_ms_encoding.selfreport.pcor, store = target_store))
+```
+
+```{r}
+summary_encoding.selfreport_pcor %>% 
+  filter(data_subset == "food") %>% 
+  select(-data_subset)
+```
+
+## correlations between encoding representation components that predict veridical looming, object, and self report
+
+```{r figure-4c}
+knitr::include_graphics(tar_read(fig_ms_beta.comparison_object.selfreport, store = target_store))
+```
+
