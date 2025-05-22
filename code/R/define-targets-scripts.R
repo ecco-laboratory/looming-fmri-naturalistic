@@ -75,17 +75,33 @@ targets_scripts <- list(
     format = "file"
   ),
   tar_target(
+    name = matlab_load_bold_for_pls,
+    command = here::here("code", "matlab", "load_fmri_data_for_pls_allsubs.m"),
+    format = "file"
+  ),
+  tar_target(
     name = matlab_fit_pls,
     command = {
       matlab_load_encoding_activations
+      matlab_load_bold_for_pls
       here::here("code", "matlab", "fit_pls_canlabtools.m")
       },
+    format = "file"
+  ),
+  tar_target(
+    name = matlab_fit_pls_no_xval,
+    command = {
+      matlab_load_encoding_activations
+      matlab_load_bold_for_pls
+      here::here("code", "matlab", "fit_pls_no_xval_canlabtools.m")
+    },
     format = "file"
   ),
   tar_target(
     name = matlab_pred_pls,
     command = {
       matlab_load_encoding_activations
+      matlab_load_bold_for_pls
       here::here("code", "matlab", "pred_pls_canlabtools.m")
     },
     format = "file"

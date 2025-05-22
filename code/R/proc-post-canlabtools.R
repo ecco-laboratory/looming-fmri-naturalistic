@@ -56,12 +56,68 @@ summarize_tvals_pre_statmap <- function (in_data_1, in_data_2 = NULL, fun_compar
 
 ### testing naturalistic encoding model-predicted pattern on controlled task betas ----
 
+calc_controlled_pattern_discrim <- function (patterns_controlled,
+                                             path_activations_controlled,
+                                             metadata_controlled,
+                                             path_betas_encoding,
+                                             betas_discrim_encoding) {
+  activations <- read_activations_controlled(path_activations_controlled, metadata_controlled)
+  
+  betas_encoding <- read_betas_encoding(path_betas_encoding)
+  
+  patterns <- patterns_controlled %>% 
+    calc_naturalistic_encoding_controlled_pred(activations, betas_encoding) %>% 
+    left_join(betas_discrim_encoding %>% 
+                rename(betas_discrim = coefs),
+              by = "subj_num") %>% 
+    mutate(discrim_pred = map2(pattern_pred, betas_discrim, \(x, y) {
+      out <- c(x %*% y)
+      names(out) <- colnames(y)
+      return(out)
+      })) %>% 
+    select(subj_num, animal_type, direction, discrim_pred) %>% 
+    unnest_wider(discrim_pred)
+  
+  return (patterns)
+}
+
 calc_controlled_pattern_expression <- function (patterns_controlled,
                                                 path_activations_controlled,
                                                 metadata_controlled,
                                                 path_betas_encoding) {
   
-  activations <- read_csv(path_activations_controlled) %>% 
+  activations <- read_activations_controlled(path_activations_controlled, metadata_controlled)
+  
+  betas_encoding <- read_betas_encoding(path_betas_encoding)
+  
+  patterns <- patterns_controlled %>% 
+    calc_naturalistic_encoding_controlled_pred(activations, betas_encoding) %>% 
+    mutate(pattern_expression = map2_dbl(pattern_pred, pattern, \(x, y) x %*% y))
+  
+  return (patterns)
+}
+
+calc_naturalistic_encoding_controlled_pred <- function (patterns_controlled,
+                                                        activations_controlled,
+                                                        betas_encoding) {
+  out <- patterns_controlled %>% 
+    # Matlab's PLS algorithm mean-centers X and Y column-wise before fitting
+    # so do the same here to keep these within the expected scale
+    # the scale is important because the pattern expression statistic is a product, and so sign-sensitive
+    mutate(across(starts_with("X"), \(x) c(scale(x, scale = FALSE)))) %>% 
+    nest(.by = c(subj_num, animal_type, direction), .key = "pattern") %>% 
+    left_join(activations_controlled, by = c("animal_type", "direction")) %>% 
+    left_join(betas_encoding, by = "subj_num") %>% 
+    mutate(pattern = map(pattern, unlist),
+           # colMeans on the product will mean over video frame in the rows
+           pattern_pred = map2(activations, betas, \(x, y) colMeans(x %*% y)))
+  
+  return (out)
+}
+
+read_activations_controlled <- function (path_activations_controlled,
+                                         metadata_controlled) {
+  out <- read_csv(path_activations_controlled) %>% 
     right_join(metadata_controlled %>% 
                  select(filename, animal_type, direction),
                by = c("video" = "filename")) %>% 
@@ -74,37 +130,73 @@ calc_controlled_pattern_expression <- function (patterns_controlled,
     nest(.by = c(animal_type, direction), .key = "activations") %>% 
     mutate(activations = map(activations, as.matrix))
   
-  betas_encoding <- read_csv(path_betas_encoding, col_names = FALSE) %>% 
+  return (out)
+}
+
+read_betas_encoding <- function (path_betas_encoding) {
+  out <- read_csv(path_betas_encoding, col_names = FALSE) %>% 
     rename(subj_num = X1) %>% 
     nest(.by = subj_num, .key = "betas") %>% 
+    # drop the intercept term
     mutate(betas = map(betas, \(x) slice_tail(x, n=nrow(x)-1)),
            betas = map(betas, as.matrix))
-  
-  pattern_mean <- patterns_controlled %>% 
-    select(starts_with("X")) %>% 
-    as.matrix() %>% 
-    mean()
-  
-  pattern_sd <- patterns_controlled %>% 
-    select(starts_with("X")) %>% 
-    as.matrix() %>% 
-    sd()
-  
-  patterns <- patterns_controlled %>% 
-    # so we can scale all the contrast values but not break the spatial relationship between voxel columns
-    mutate(across(starts_with("X"), \(x) (x - pattern_mean)/pattern_sd)) %>% 
-    nest(.by = c(subj_num, animal_type, direction), .key = "pattern") %>% 
-    left_join(activations, by = c("animal_type", "direction")) %>% 
-    left_join(betas_encoding, by = "subj_num") %>% 
-    mutate(pattern = map(pattern, unlist),
-           # colMeans on the product will mean over video frame in the rows
-           pattern_pred = map2(activations, betas, \(x, y) colMeans(x %*% y)),
-           pattern_expression = map2_dbl(pattern_pred, pattern, \(x, y) x %*% y))
-  
-  return (patterns)
 }
 
 ### classifying human-labeled stimulus category by encoding model-predicted pattern ----
+
+compare_betas_encoding_category_selfreport <- function (betas_loom,
+                                                        betas_object,
+                                                        betas_selfreport,
+                                                        n_bootstraps) {
+  # get all sets of betas as tibbles with outcome on the column and voxel on the row
+  betas_loom %<>%
+    as_tibble() %>% 
+    # in 2 class, they are direct opposite so only need one
+    select(outcome_loom)
+  
+  betas_object %<>%
+    as_tibble()
+  
+  betas_selfreport %<>% 
+    unnest_longer(coefs) %>% 
+    pivot_wider(names_from = rating_type, values_from = coefs) %>% 
+    select(-coefs_id) %>% 
+    rename_with(\(x) paste0("rating_", x), everything()) %>% 
+    # so that the self report betas will all correlate positively with each other
+    mutate(rating_unpleasantness = -rating_pleasantness) %>% 
+    select(-rating_pleasantness)
+
+  boots <- bind_cols(betas_loom, betas_object, betas_selfreport) %>% 
+    # not ideal but bootstrap at the order of voxels because bootstrapping earlier 
+    # at the level of re-fitting the second-order models is not really tractable
+    bootstraps(times = n_bootstraps, apparent = TRUE) %>% 
+    mutate(correlations = map(splits,
+                              \(x) analysis(x) %>% 
+                                cor() %>% 
+                                as_tibble(rownames = "row") %>% 
+                                pivot_longer(cols = -row, names_to = "col", values_to = "correlation"),
+                              .progress = "bootstrapping cross-outcome beta cormats")) %>% 
+    select(-splits)
+  
+  apparent <- boots %>% 
+    filter(id == "Apparent") %>% 
+    unnest(correlations) %>% 
+    select(-id) %>% 
+    rename(cor_true = correlation)
+  
+  out <- boots %>% 
+    filter(id != "Apparent") %>% 
+    unnest(correlations) %>% 
+    group_by(row, col) %>% 
+    summarize(cor_mean = mean(correlation), 
+              cor_ci95.lower = quantile(correlation, .025), 
+              cor_ci95.upper = quantile(correlation, .975), 
+              .groups = "drop") %>% 
+    left_join(apparent, by = c("row", "col"))
+
+  return (out)
+}
+
 calc_perm_pval_object_by_pattern <- function (preds, perms, grouping_cols = NULL) {
   
   grouping_cols <- enquo(grouping_cols)
@@ -273,7 +365,122 @@ fit_object_by_pattern <- function (path_pattern_allsubs,
                          mutate(.obs = factor(.obs),
                                 # patch all categories back in in case one is never predicted
                                 .pred = factor(.pred, levels = levels(.obs))),
-                       .progress = "cleaning up class predictions"))
+                       .progress = "cleaning up class predictions"),
+           subj_num = map_dbl(preds, \(x) unique(x$subj_num)),
+           preds = map(preds, \(x) select(x, -subj_num)))
+  
+  if (outcome_categories == "looming") {
+    out %<>%
+      # for 2 classes, metrics only takes a single probability
+      mutate(preds = map(preds, \(x) mutate(x, .preds = map(.preds, \(y) y[1]))))
+  }
+  
+  return (out)
+}
+
+fit_object_by_pattern <- function (path_pattern_allsubs, 
+                                   events_allsubs, 
+                                   n_trs_kept_per_run, 
+                                   path_pattern_allsubs_2 = NULL,
+                                   pattern_type = c("bold", "encoding"), 
+                                   outcome_categories = c("object", "looming", "object_looming"),
+                                   n_pls_comp = 5,
+                                   xval = TRUE) {
+  # just to save memory since these aren't used for this analysis
+  events_allsubs %<>%
+    select(-starts_with("rating"))
+  
+  stopifnot(length(pattern_type) == 1)
+  
+  if (pattern_type == "bold") {
+    
+    timecourses <- path_pattern_allsubs %>% 
+      load_bold_mat_allsubs() %>% 
+      select(-fold_num)
+  
+  } else if (pattern_type == "encoding") {
+    
+    timecourses <- load_encoding_pred_allsubs(path_pattern_allsubs)
+    
+    if (!is.null(path_pattern_allsubs_2)) {
+      timecourses %<>%
+        left_join(load_encoding_pred_allsubs(path_pattern_allsubs_2),
+                  by = c("subj_num", "tr_num"),
+                  suffix = c(".1", ".2"))
+    }
+  }
+  
+  out <- timecourses %>% 
+    left_join(events_allsubs, by = c("subj_num", "tr_num")) %>% 
+    # reconstruct run number here for later block permutation by run
+    mutate(run_num = (tr_num-1) %/% n_trs_kept_per_run) %>% 
+    # PHIL HAD SET UP HIS PRELIMINARY ANALYSIS TO EXCLUDE FIXATION TIMEPOINTS
+    filter(!is.na(animal_type), animal_type != "fixation")
+  
+  stopifnot(length(outcome_categories) == 1)
+  
+  if (outcome_categories == "object") {
+    out %<>%
+      rename(outcome = animal_type)
+  } else if (outcome_categories == "looming") {
+    out %<>%
+      mutate(outcome = if_else(has_loom == 1, "loom", "no.loom"))
+  } else if (outcome_categories == "object_looming") {
+    out %<>%
+      # when classifying the interaction of object and looming, drop food because it never looms
+      # to reduce imbalance
+      filter(animal_type != "food") %>% 
+      unite("outcome", animal_type, has_loom, sep = ".")
+  }
+  
+  if (!xval) {
+    out %<>% 
+      # fit_pls_single returns a list object
+      fit_pls_single(x_prefix = "voxel",
+                     y_prefix = "outcome",
+                     num_comp = n_pls_comp,
+                     additional_recipe_steps = \(x) step_dummy(x, all_of("outcome"), role = "outcome", one_hot = TRUE, skip = TRUE),
+                     rm_x = TRUE,
+                     return_longer = FALSE) %>% 
+      pluck("model") %>% 
+      # now JUST the coefs
+      extract_pls_workflow_coefs()
+    
+    # if no xval, we aren't looking at any held-out predictions. just the coefs
+    return (out)
+  }
+  
+  out %<>%
+    # x_prefix = "voxel" works for both bold and encoding (assuming encoding is always by space)
+    fit_model_xval(x_prefix = "voxel",
+                   y_prefix = "outcome",
+                   parsnip_model = set_engine(parsnip::pls(mode = "regression", num_comp = n_pls_comp), engine = "plsr", method = "simpls"),
+                   additional_recipe_steps = \(x) step_dummy(x, all_of("outcome"), role = "outcome", one_hot = TRUE, skip = TRUE),
+                   rm_x = TRUE,
+                   return_longer = FALSE) %>% 
+    # 2025-05-05: We want to save the betas out now too for subsequent second-order correlation analysis with the encoding.selfreport models
+    # the object is too large to save out if we keep all the model fits
+    mutate(coefs = map(model, \(x) extract_pls_workflow_coefs(x),
+                       .progress = "extracting coefs")) %>% 
+    select(coefs, preds) %>% 
+    mutate(preds = map(preds, \(x) x %>% 
+                         rename(.obs = .obs_outcome) %>% 
+                         # at this point, .obs is just the original categorical column but .pred has the 5 columns from the one-hot outcome levels
+                         # bundle .obs and .pred together to make it easier to extract the max for each one as the class label
+                         nest(.preds = starts_with(".pred")) %>% 
+                         mutate(.preds = map(.preds, \(y) unlist(y)),
+                                # keep both the numeric PLS-DA "class predictions" and the label for the max class prediction
+                                # the former for ROC curves and the latter for straight-up accuracy
+                                .pred = map_chr(.preds, \(y) names(y)[y == max(y)])) %>% 
+                         # clean up class labels that were pulled from predictor col names
+                         mutate(.pred = str_split_i(.pred, "_", 3)) %>% 
+                         # and finally push everything back to factor for tidymodels accuracy etc
+                         mutate(.obs = factor(.obs),
+                                # patch all categories back in in case one is never predicted
+                                .pred = factor(.pred, levels = levels(.obs))),
+                       .progress = "cleaning up class predictions"),
+           subj_num = map_dbl(preds, \(x) unique(x$subj_num)),
+           preds = map(preds, \(x) select(x, -subj_num)))
   
   if (outcome_categories == "looming") {
     out %<>%

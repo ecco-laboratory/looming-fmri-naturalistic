@@ -105,6 +105,39 @@ canlabtools_pred_encoding_pls <- function (out_path_perf,
   return (out)
 }
 
+canlabtools_fit_encoding_pls_no.xval <- function (out_path_betas,
+                                                  tr_duration,
+                                                  bolds_masked,
+                                                  activations1,
+                                                  activations2 = NA,
+                                                  script = matlab_fit_pls_no_xval) {
+  
+  matlab_commands <- c(
+    assign_variable("out_path_betas", out_path_betas),
+    # need to pass this in for the HRF convolution
+    assign_variable("tr_duration", tr_duration),
+    # this modeling script operates across subjects but takes in data by run
+    # so these expect lists with one list-field per subject containing vectors for runs
+    # the ROI has already been selected by the choice of paths_masked
+    rvec_to_matlabcell(bolds_masked, matname = "paths_masked"),
+    rvec_to_matlabcell(activations1, matname = "paths_activations_1")
+  )
+  
+  # is.na is vectorized, including for lists. lol... # I guess we could just test if it's length 1 or not but this seems safe?
+  if (!all(is.na(activations2))) {
+    matlab_commands <- c(matlab_commands,
+                         rvec_to_matlabcell(activations2, matname = "paths_activations_2"))
+  }
+  
+  matlab_commands <- c(matlab_commands,
+                       call_script(script))
+  
+  out <- run_matlab_target(matlab_commands, 
+                           out_path_betas, 
+                           matlab_path)
+  return (out)
+}
+
 canlabtools_fit_encoding_pls <- function (out_path_perf,
                                           out_path_pred,
                                           out_path_betas,

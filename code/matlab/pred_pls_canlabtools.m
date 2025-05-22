@@ -60,36 +60,7 @@ end
 % SO IT IS HIGHLY INCUMBENT ON YOU TO MAKE SURE THAT THE ACTIVATIONS AND BOLDS COME IN IN 
 % MATCHED ORDER BECAUSE PAST THIS POINT YOU ARE JUST ASSUMING THESE INDICES LINE UP
 disp('Loading pre-masked and pre-preprocessed timeseries')
-% fencepost for first subject to allow preallocation for all subjects
-bold = load(paths_masked{1});
-% assume this is going to be true for every subject. same timeseries duration
-bold_height = height(bold.DATA);
-
-bold_masked_allsubjs = zeros(n_subjs*bold_height, width(bold.DATA));
-subj_indices = zeros(n_subjs*bold_height, 1);
-this_subj_indices = 1:bold_height;
-bold_masked_allsubjs(this_subj_indices, :) = bold.DATA;
-
-subj_nums = [];
-[~, file_masked, ~] = fileparts(paths_masked{1});
-this_subj_num = str2double(extractBetween(convertCharsToStrings(file_masked), 5, 8));
-subj_indices(this_subj_indices, 1) = this_subj_num;
-subj_nums = [subj_nums, this_subj_num];
-
-% loop over the rest of the subjects
-for i=2:n_subjs
-    clear bold
-    bold = load(paths_masked{i});
-    % whatever. I doubt failure
-    this_subj_indices = (1:bold_height) + (bold_height * (i-1));
-    bold_masked_allsubjs(this_subj_indices, :) = bold.DATA;
-    [~, file_masked, ~] = fileparts(paths_masked{i});
-    this_subj_num = str2double(extractBetween(convertCharsToStrings(file_masked), 5, 8));
-    subj_indices(this_subj_indices, 1) = this_subj_num;
-    subj_nums = [subj_nums, this_subj_num];
-    
-end
-clear bold this_subj_indices
+[bold_masked_allsubjs, subj_indices, subj_nums] = load_fmri_data_for_pls_allsubs(paths_masked);
 
 %% GET PLS PREDS FOR EACH HELD-OUT SUBJECT
 % for each encoding model, fit the PLS

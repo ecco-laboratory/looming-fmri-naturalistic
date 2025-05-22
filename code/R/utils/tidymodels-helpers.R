@@ -27,6 +27,15 @@ make_workflow <- function (in_data, x_prefix, y_prefix, parsnip_model, additiona
   return (out_workflow)
 }
 
+# always extracts from the solution using the maximal number of components
+extract_pls_workflow_coefs <- function (workflow_fit) {
+  model_obj <- extract_fit_engine(workflow_fit)
+  ncomp <- pluck(model_obj, "ncomp")
+  coefficients <- pluck(model_obj, "coefficients")
+  
+  return(drop(coefficients[ , , ncomp]))
+}
+
 # wrapper around predict() that does some additional post-processing of the predictions
 get_preds_one_fold <- function (model, data_or_split, x_prefix, y_prefix, rm_x, return_longer = TRUE) {
   if ("rsplit" %in% class(data_or_split)) {
@@ -91,20 +100,22 @@ fit_model_xval <- function (in_data,
 fit_pls_single <- function (in_data, 
                             x_prefix, 
                             y_prefix = "rating",
+                            additional_recipe_steps = NULL,
                             num_comp = 1,
-                            rm_x = FALSE) {
+                            rm_x = FALSE,
+                            return_longer = TRUE) {
   
   parsnip_model <- parsnip::pls(mode = "regression", num_comp = num_comp) %>% 
     set_engine(engine = "plsr",
                # same algorithm as matlab plsregress
                method = "simpls")
   
-  this_workflow <- make_workflow(in_data, x_prefix = x_prefix, y_prefix = y_prefix, parsnip_model = parsnip_model) %>% 
+  this_workflow <- make_workflow(in_data, x_prefix = x_prefix, y_prefix = y_prefix, parsnip_model = parsnip_model, additional_recipe_steps = additional_recipe_steps) %>% 
     fit(data = in_data)
   
-  out_data <- get_preds_one_fold(this_workflow, in_data, x_prefix = x_prefix, y_prefix = y_prefix, rm_x = rm_x)
+  out_data <- get_preds_one_fold(this_workflow, in_data, x_prefix = x_prefix, y_prefix = y_prefix, rm_x = rm_x, return_longer = return_longer)
   
-  return (out_data)
+  return (list(model = this_workflow, preds = out_data))
 }
 
 fit_model_2level <- function (in_data,

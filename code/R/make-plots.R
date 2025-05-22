@@ -23,7 +23,7 @@ plot_selfreport_ratings <- function (beh_data) {
                     fun.data = "mean_se") +
     labs(x = "Object type",
          y = "Self-report rating",
-         color = NULL,
+         color = "Motion",
          subtitle = glue::glue("N = {n_subjs} participants")) +
     facet_wrap(~ construct)
   
@@ -251,6 +251,46 @@ plot_encoding_performance_pcor <- function (perf_pcor_combined) {
          subtitle = glue::glue("Leave-one-subject-out cross-validation, N = {n_subjs}"))
 }
 
+plot_encoding_object_acc <- function (acc_summary, y_description, encoding_labels = NULL) {
+  
+  if (!is.null(encoding_labels)) {
+    acc_summary %<>%
+      mutate(encoding_type = fct_relevel(encoding_type, !!encoding_labels),
+             encoding_type = fct_recode(encoding_type, !!!encoding_labels))
+  }
+  
+  acc_summary %>% 
+    filter(.metric == "accuracy") %>% 
+    mutate(pval_text = if_else(pval < .001, "p < .001", glue::glue("p = {round(pval, 3)}"))) %>% 
+    ggplot(aes(x = encoding_type, y = estimate, fill = encoding_type)) + 
+    geom_col() +
+    geom_text(aes(label = pval_text), vjust = 0, nudge_y = .01) +
+    guides(fill = "none") +
+    labs(x = "which encoding model?",
+         y = glue::glue("Classification accuracy\n({y_description})"))
+}
+
+plot_encoding_object_acc_by_object <- function (acc_summary, y_description, encoding_labels = NULL) {
+  
+  if (!is.null(encoding_labels)) {
+    acc_summary %<>%
+      mutate(encoding_type = fct_relevel(encoding_type, !!encoding_labels),
+             encoding_type = fct_recode(encoding_type, !!!encoding_labels))
+  }
+  
+  acc_summary %>% 
+    filter(.metric == "accuracy") %>% 
+    mutate(animal_type = fct_relevel(animal_type, "dog", "cat", "frog", "spider"),
+           pval_text = if_else(pval < .001, "p < .001", glue::glue("p = {round(pval, 3)}"))) %>% 
+    ggplot(aes(x = animal_type, y = estimate, fill = encoding_type)) + 
+    geom_col() +
+    geom_text(aes(label = pval_text), vjust = 0, nudge_y = .01) +
+    guides(fill = "none") +
+    labs(x = "Object category",
+         y = glue::glue("Classification accuracy\n({y_description})")) +
+    facet_wrap(~ encoding_type)
+}
+
 plot_encoding_selfreport_pcor <- function (summary_pcor) {
   summary_pcor %>% 
     mutate(vjust_label = case_match(term, 
@@ -263,7 +303,7 @@ plot_encoding_selfreport_pcor <- function (summary_pcor) {
            rating_type = fct_relevel(rating_type, "valence")) %>% 
     ggplot(aes(x = pcor_mean, y = fct_rev(rating_type), color = term)) + 
     geom_vline(xintercept = 0, linetype = "dotted") + 
-    geom_pointrange(aes(xmin = pcor_ci95_lower, xmax = pcor_ci95_upper), 
+    geom_pointrange(aes(xmin = pcor_ci95.lower, xmax = pcor_ci95.upper), 
                     position = position_dodge(width = 0.1)) + 
     geom_text(aes(label = term, vjust = vjust_label), 
               position = position_dodge(width = rel(0.4)),
@@ -273,9 +313,82 @@ plot_encoding_selfreport_pcor <- function (summary_pcor) {
          y = NULL)
 }
 
+plot_predicted_alexnet_categories <- function (path_alexnet_activations, stim_labels, path_imagenet_categories, lump_prop = .1) {
+  read_csv(path_alexnet_activations) %>% 
+    right_join(stim_labels, 
+               by = "video") %>% 
+    select(-frame) %>% 
+    nest(.by = c(video, animal_type, looming), .key = "activations") %>% 
+    mutate(activations = map(activations, as.matrix)) %>% 
+    mutate(max_indices_from0 = map(activations, \(x) apply(x, 1, which.max) - 1)) %>% 
+    select(-activations) %>% 
+    unchop(max_indices_from0) %>% 
+    left_join(read_csv(path_imagenet_categories), by = c("max_indices_from0" = "index")) %>% 
+    group_by(animal_type, looming) %>% 
+    mutate(categories_lumped = fct_lump_prop(categories, prop = lump_prop, other_level = "other")) %>% 
+    count(animal_type, looming, categories_lumped) %>% 
+    arrange(animal_type, looming, desc(categories_lumped)) %>% 
+    mutate(prop = n/sum(n),
+           bar_max = cumsum(prop), 
+           bar_min = coalesce(lag(bar_max), 0), 
+           bar_mid = bar_min + (bar_max-bar_min)/2) %>% 
+    ggplot(aes(x = looming, y = prop, fill = categories_lumped)) + 
+    geom_col() + 
+    geom_text(aes(y = bar_mid, label = categories_lumped)) + 
+    facet_wrap(~animal_type) + 
+    scale_fill_brewer(type = "qual", palette = "Set3") +
+    guides(fill = "none") +
+    labs(x = NULL,
+         y = "Top-1 ImageNet superordinate class probability")
+}
+
 plot_encoding_controlled_flynet <- function (pattern_expressions) {
   pattern_expressions %>% 
-    ggplot(aes(x = animal_type, y = pattern_expression, fill = direction)) + 
-    geom_boxplot() + 
-    geom_hline(yintercept = 0, linetype = "dotted")
+    ggplot(aes(x = animal_type, y = pattern_expression, color = direction)) + 
+    geom_hline(yintercept = 0, linetype = "dotted") +
+    geom_line(aes(group = interaction(subj_num, direction)), alpha = 0.2) + 
+    geom_line(aes(group = direction), stat = "summary", fun = "mean") + 
+    geom_pointrange(stat = "summary", fun.data = "mean_se") +
+    labs(x = "Object type",
+         y = "Looming pattern expression strength (AU)",
+         color = "Controlled motion\ndirection")
+}
+
+plot_cormats_encoding_object_selfreport <- function (beta.comparison_flynet,
+                                                     beta.comparison_alexnet,
+                                                     remove_food = TRUE) {
+  
+  plot_data <- bind_rows("Looming encoding model" = beta.comparison_flynet,
+            "Object encoding model" = beta.comparison_alexnet,
+            .id = "encoding_type")
+  
+  if (remove_food) {
+    plot_data %<>%
+      filter(row != "outcome_food", col != "outcome_food")
+  }
+  
+  plot_data %>% 
+    mutate(across(c(row, col), 
+                  \(x) if_else(x == "outcome_loom",
+                               "looming",
+                               x) %>% 
+                    str_replace("outcome_", "object: ") %>% 
+                    str_replace("rating_", "self-report: ") %>% 
+                    fct_relevel("looming", 
+                                "object: dog", 
+                                "object: cat", 
+                                "object: frog", 
+                                "object: spider", 
+                                "self-report: unpleasantness")),
+           ci_excludes_0 = sign(cor_ci95.lower) == sign(cor_ci95.upper)) %>% 
+    ggplot(aes(x = col, y = fct_rev(row), fill = cor_true)) + 
+    geom_raster() + 
+    geom_text(aes(label = round(cor_true, 2),
+                  color = ci_excludes_0)) + 
+    scale_color_manual(values = c("TRUE" = "black", "FALSE" = "grey64")) +
+    scale_fill_gradient2() +
+    guides(x = guide_axis(angle = 30),
+           color = "none") +
+    facet_wrap(~ encoding_type) +
+    labs(x = NULL, y = NULL, fill = "Correlation")
 }
