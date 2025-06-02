@@ -1,5 +1,5 @@
 function contrasts = calc_contrasts_level1_controlled(condition_names)
-    contrasts = cell(1, 15);
+    contrasts = cell(1, 16);
     contrasts{1}.tcon.name = 'attend_animal';                                                                                                            
     contrasts{1}.tcon.weights = contains(condition_names, "animal") - contains(condition_names, "hemifield");
     contrasts{2}.tcon.name = 'dog';
@@ -33,4 +33,8 @@ function contrasts = calc_contrasts_level1_controlled(condition_names)
     contrasts{14}.tcon.weights = contains(condition_names, "looming") + contains(condition_names, "receding");
     contrasts{15}.tcon.name = 'ratings';
     contrasts{15}.tcon.weights = double(contains(condition_names, "ratings"));
+    % Teehee: This uses the SPM session means to estimate voxelwise mean signal a la marsbar
+    % to use for subsequent percent signal change calculations
+    contrasts{16}.tcon.name = 'meansignal';
+    contrasts{16}.tcon.weights = double(contains(condition_names, "constant"));
 end

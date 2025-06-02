@@ -1,5 +1,20 @@
 ## helper functions for constructing canlabtools matlab calls used by targets ----
 
+canlabtools_parcellate_avg <- function (out_path,
+                                        path_connectivity_allsubs,
+                                        script = matlab_parcellate_avg) {
+  matlab_commands = c(
+    assign_variable("out_path", out_path),
+    # expects a path to a single canlabtools fmri_data compatible matrix
+    # NOT NIFTIS!!!
+    assign_variable("path_fmri_data", path_connectivity_allsubs),
+    call_script(script)
+  )
+  
+  out <- run_matlab_target(matlab_commands, out_path, matlab_path)
+  return (out)
+}
+
 canlabtools_fit_model_connectivity <- function (out_path,
                                                 tr_duration,
                                                 trs_to_use,
@@ -178,13 +193,21 @@ canlabtools_fit_encoding_pls <- function (out_path_perf,
 
 canlabtools_combine_mask_betas <- function (out_path,
                                             betas,
+                                            meansignal = NULL,
                                             roi = "Bstem_SC",
                                             script = matlab_combine_mask_betas) {
   
-  matlab_commands = c(
+  if (!is.null(meansignal)) {
+    matlab_commands <- rvec_to_matlabcell(meansignal, matname = "paths_nifti_mean")
+  } else {
+    matlab_commands <- c()
+  }
+  
+  matlab_commands <- c(
+    matlab_commands,
     assign_variable("out_path", out_path),
     # this expects a cell array of chars, one for each subject
-    rvec_to_matlabcell(betas, matname = "paths_nifti"),
+    rvec_to_matlabcell(betas, matname = "paths_nifti_betas"),
     rvec_to_matlabcell(roi, matname = "region"),
     call_script(script)
   )

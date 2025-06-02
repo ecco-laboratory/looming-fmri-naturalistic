@@ -27,7 +27,7 @@ tar_option_set(
       log_output = "/home/%u/log/crew_log_%A.out",
       log_error = "/home/%u/log/crew_log_%A.err",
       # single subject level 1s require 32 GB to run more than snail's pace?
-      memory_gigabytes_required = 16,
+      memory_gigabytes_required = 32,
       cpus_per_task = 1,
       time_minutes = 1339,
       partition = "day-long"
@@ -429,7 +429,8 @@ contrast_names <- c("attend.animal",
                     "receding.frog.baseline",
                     "receding.spider.baseline",
                     "stimuli",
-                    "ratings")
+                    "ratings",
+                    "meansignal")
 
 # attention! this is the middle tar_map, which defines SUBJECT-UNIQUE targets
 targets_fmri_by.subject <- make_targets_fmri_by.subject(participants,
@@ -444,12 +445,16 @@ subtargets_fmri_across.subject <- list(
   tar_eval(
     tar_target(name = target_name,
                command = canlabtools_combine_mask_betas(out_path = out_path,
-                                                        betas = input_name,
+                                                        betas = beta_name,
+                                                        meansignal = meansignal_name,
                                                         script = matlab_combine_mask_betas),
                format = "file"),
     values = tibble(contrast = contrast_names) %>% 
+      filter(contrast != "meansignal") %>% 
       mutate(target_name = syms(sprintf("con.masked.sc_%s_boxcar", contrast)),
-             input_name = syms(sprintf("con_%s_boxcar", contrast)),
+             beta_name = syms(sprintf("con_%s_boxcar", contrast)),
+             # yes, use syms() for length 1 also bc syms() returns a list so it will repeat out to tibble length
+             meansignal_name = syms("con_meansignal_boxcar"),
              out_path = here::here("ignore", "data", "canlabtools", sprintf("task-controlled_region-sc_con-%s.csv", contrast)))
   )
 )
