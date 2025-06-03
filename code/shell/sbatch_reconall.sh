@@ -9,8 +9,6 @@
 # Outputs ----------------------------------
 #SBATCH -o /home/%u/log/%x-%A-%a.out
 #SBATCH -e /home/%u/log/%x-%A-%a.err
-#SBATCH --mail-user=mthieu@emory.edu
-#SBATCH --mail-type=ALL
 # ------------------------------------------
 
 # This sbatch script takes the subj nums to freesurf, with no leading 0s, 
