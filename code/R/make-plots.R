@@ -123,6 +123,33 @@ plot_sample_timecourse_bold <- function (path_bold_masked_mat) {
          y = "BOLD")
 }
 
+plot_confusion <- function(object_preds, facet_var_row = NULL, facet_var_col = NULL) {
+  facet_vars <- enquos(facet_var_row, facet_var_col)
+  facet_var_row <- enquo(facet_var_row)
+  facet_var_col <- enquo(facet_var_col)
+  
+  plot_data <- object_preds %>% 
+    count(!!!facet_vars, .obs, .pred) %>% 
+    complete(!!!facet_vars, .obs, .pred, fill = list(n = 0)) %>%
+    group_by(pick(!!!facet_vars, .obs)) %>% 
+    mutate(prob = n/sum(n)) %>% 
+    ungroup() %>% 
+    mutate(diagonal_outline_width = if_else(.pred == .obs, .5, NA))
+  
+  plot_out <- plot_data %>% 
+    ggplot(aes(x = .pred, y = fct_rev(.obs))) + 
+    geom_raster(aes(fill = prob)) +
+    # color to outline the "hit" cells
+    geom_tile(aes(linewidth = diagonal_outline_width), width = 1, height = 1, alpha = 0, color = "grey85") + 
+    geom_text(aes(label = round(prob, 2)), color = "white") + 
+    scale_fill_viridis_c() +
+    guides(linewidth = "none") +
+    labs(x = "Predicted class", y = "True class", fill = "Classification\nprobability") +
+    facet_grid(rows = vars(!!facet_var_row), cols = vars(!!facet_var_col))
+  
+  return (plot_out)
+}
+
 plot_auroc_8cat <- function (object_preds) {
   object_preds %>% 
     unnest_wider(col = .preds) %>% 
@@ -342,21 +369,22 @@ plot_predicted_alexnet_categories <- function (path_alexnet_activations, stim_la
          y = "Top-1 ImageNet superordinate class probability")
 }
 
-plot_encoding_controlled_flynet <- function (pattern_expressions) {
+plot_encoding_controlled_flynet <- function (pattern_expressions, y_var, y_label) {
   pattern_expressions %>% 
-    ggplot(aes(x = animal_type, y = pattern_expression, color = direction)) + 
+    ggplot(aes(x = animal_type, y = {{y_var}}, color = direction)) + 
     geom_hline(yintercept = 0, linetype = "dotted") +
     geom_line(aes(group = interaction(subj_num, direction)), alpha = 0.2) + 
     geom_line(aes(group = direction), stat = "summary", fun = "mean") + 
     geom_pointrange(stat = "summary", fun.data = "mean_se") +
     labs(x = "Object type",
-         y = "Looming pattern expression strength (AU)",
+         y = y_label,
          color = "Controlled motion\ndirection")
 }
 
 plot_cormats_encoding_object_selfreport <- function (beta.comparison_flynet,
                                                      beta.comparison_alexnet,
-                                                     remove_food = TRUE) {
+                                                     remove_food = TRUE,
+                                                     bottom_only = FALSE) {
   
   plot_data <- bind_rows("Looming encoding model" = beta.comparison_flynet,
             "Object encoding model" = beta.comparison_alexnet,
@@ -365,6 +393,11 @@ plot_cormats_encoding_object_selfreport <- function (beta.comparison_flynet,
   if (remove_food) {
     plot_data %<>%
       filter(row != "outcome_food", col != "outcome_food")
+  }
+  
+  if (bottom_only) {
+    plot_data %<>%
+      filter(starts_with(row, "rating"))
   }
   
   plot_data %>% 
@@ -391,4 +424,40 @@ plot_cormats_encoding_object_selfreport <- function (beta.comparison_flynet,
            color = "none") +
     facet_wrap(~ encoding_type) +
     labs(x = NULL, y = NULL, fill = "Correlation")
+}
+
+plot_parcel_connectivity <- function (parcels_long,
+                                      fill_col,
+                                      pval_col,
+                                      ggseg_sides,
+                                      ggseg_position = "horizontal",
+                                      positive_only = TRUE,
+                                      max_fill_tval = 5,
+                                      threshold_p_outline = .05,
+                                      viridis_palette = "viridis") {
+  if (positive_only) {
+    plot_data <- parcels_long %>% 
+      mutate(this_fill_col = pmax({{fill_col}}, 0),
+             this_outline_col = {{pval_col}} < threshold_p_outline & this_fill_col > 0)
+    
+    this_scale_fill <- scale_fill_viridis_c(limits = c(0, max_fill_tval), oob=scales::squish, option = viridis_palette)
+  } else {
+    plot_data <- parcels_long %>% 
+      rename(this_fill_col = {{fill_col}}) %>% 
+      mutate(this_outline_col = {{pval_col}} < threshold_p_outline)
+    this_scale_fill <- scale_fill_gradient2(limits = c(-max_fill_tval, max_fill_tval), oob=scales::squish)
+  }
+  
+  plot_data %>% 
+    relabel_glasser_clt2ggseg() %>% 
+    brain_join(ggsegGlasser::glasser) %>% 
+    filter(side %in% ggseg_sides) %>% 
+    reposition_brain(ggseg_position) %>% 
+    arrange(this_fill_col) %>%
+    ggplot() +
+    geom_sf(aes(fill = this_fill_col, color = this_outline_col), linewidth = 0.5) +
+    this_scale_fill +
+    scale_color_manual(values = c("TRUE" = "white", "FALSE" = "black"), na.translate = FALSE) +
+    guides(color = "none") +
+    labs(fill = "t-value")
 }
