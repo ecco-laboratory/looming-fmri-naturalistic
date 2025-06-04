@@ -115,5 +115,13 @@ targets_scripts <- list(
     name = matlab_export_statmap,
     command = here::here("code", "matlab", "export_statmap_canlabtools.m"),
     format = "file"
+  ),
+  tar_target(
+    name = matlab_parcellate_avg,
+    command = {
+      matlab_select_atlas_subset
+      here::here("code", "matlab", "parcellate_avg_fmri_data_canlabtools.m")
+      },
+    format = "file"
   )
 )
