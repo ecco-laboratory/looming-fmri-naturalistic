@@ -27,7 +27,7 @@ do
         scancel $1
         echo "error found, cancelled job"
         NEW_SBATCH_OUT=$(sbatch --array=$ARRAY_ID /home/data/eccolab/SPLaT_fMRI/code/shell/sbatch_fmriprep.sh)
-        NEW_JOB_ID=${NEW_SBATCH_OUT: -5}_${ARRAY_ID}
+        NEW_JOB_ID=${NEW_SBATCH_OUT:20}_${ARRAY_ID}
         sbatch /home/data/eccolab/SPLaT_fMRI/code/shell/monitor_fmriprep.sh $NEW_JOB_ID
         exit
     fi
