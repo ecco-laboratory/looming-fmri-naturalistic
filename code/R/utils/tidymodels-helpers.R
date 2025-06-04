@@ -77,6 +77,28 @@ get_preds_one_fold <- function (model, data_or_split, x_prefix, y_prefix, rm_x, 
   return (preds)
 }
 
+tidy_plsda_preds <- function (preds) {
+  preds %>% 
+    rename(.obs = .obs_outcome) %>% 
+    # at this point, .obs is just the original categorical column but .pred has one columns for each one-hot outcome level
+    # bundle .obs and .pred together to make it easier to extract the max for each one as the class label
+    nest(.preds = starts_with(".pred")) %>% 
+    mutate(.preds = map(.preds, \(y) unlist(y)),
+           # keep both the numeric PLS-DA "class predictions" and the label for the max class prediction
+           # the former for ROC curves and the latter for straight-up accuracy
+           .pred = map_chr(.preds, \(y) names(which.max(y))), 
+           # once the max class prediction has been pulled,
+           # keep only the first class prob value for 2-class scenarios
+           # because tidymodels only takes one class prob for 2-class auc
+           .preds = map(.preds, \(y) if (length(y) == 2) return (y[1]) else return (y)),
+           # clean up class labels that were pulled from predictor col names
+           .pred = str_split_i(.pred, "_", 3),
+           # and finally push everything back to factor for tidymodels accuracy etc
+           .obs = factor(.obs),
+           # patch all categories back in in case one is never predicted
+           .pred = factor(.pred, levels = levels(.obs)))
+}
+
 fit_model_xval <- function (in_data, 
                             x_prefix, 
                             y_prefix = "rating",
@@ -146,4 +168,80 @@ fit_model_2level <- function (in_data,
            preds = purrr::map2(model, splits, \(x, y) get_preds_one_fold(x, y, x_prefix = x_prefix, y_prefix = y_var, rm_x = rm_x), .progress = "getting predictions"))
   
   return (out)
+}
+
+calc_xval_perf <- function (df_preds, grouping_cols = NULL, classprob_prefix = ".pred_outcome", df_perms = NULL) {
+  grouping_cols <- enquo(grouping_cols)
+  join_by_cols <- ".metric"
+  if (!quo_is_null(grouping_cols)) join_by_cols <- c(join_by_cols, quo_name(grouping_cols))
+  
+  acc_true <- df_preds %>% 
+    select(subj_num, preds) %>% 
+    # calculate accuracy within held-out subject
+    mutate(acc = map(preds, \(x) calc_metrics_nested_classprobs(x,
+                                                                grouping_cols = !!grouping_cols,
+                                                                classprob_prefix = classprob_prefix))) %>% 
+    select(-preds) %>% 
+    unnest(acc) %>% 
+    group_by(.metric, pick(!!grouping_cols)) %>% 
+    summarize(across(.estimate, list(mean = mean, se = \(x) sd(x)/sqrt(length(x)))), .groups = "drop")
+  
+  if (!is.null(df_perms)) {
+    out <- df_perms %>% 
+      unnest(acc_perm) %>% 
+      rename(.estimate_perm = .estimate) %>% 
+      left_join(acc_true, by = join_by_cols) %>% 
+      group_by(.metric, pick(!!grouping_cols)) %>% 
+      # pval needs to be calculated first before the columns get overwritten with their summary values
+      summarize(pval = (sum(.estimate_perm > .estimate_mean)+1)/(n()+1),
+                across(c(.estimate_mean, .estimate_se), unique),
+                # need this to report permuted chance levels
+                .estimate_perm = median(.estimate_perm)) %>% 
+      select(!!grouping_cols, .estimate_mean, .estimate_se, .estimate_perm, pval)
+      
+    
+    return (out)
+  } else {
+    return (acc_true)
+  }
+}
+
+permute_xval_classification <- function (df_preds, n_perms, grouping_cols = NULL, classprob_prefix = ".pred_outcome") {
+  grouping_cols <- enquo(grouping_cols)
+  
+  # expects by-subj nested xval output to permute within subject
+  out <- df_preds %>% 
+    # IF THIS IS CALLED WITHIN A TAR_REP, MULTIPLY N_PERMS BY THE NUMBER OF BATCHES FOR THE TOTAL OVERALL NUMBER OF ITERATIONS
+    mutate(splits_nested = map(preds, \(x) permutations(x, .obs, times = n_perms), 
+                               .progress = "permuting")) %>% 
+    select(-preds) %>% 
+    # now get splits out of the nest and into a column
+    unnest(splits_nested) %>% 
+    # reconstruct across-subjects permuted datasets. requires pulling full data out of the splits objects
+    mutate(perm_preds = map(splits, \(x) analysis(x), 
+                            .progress = "unnesting within subject")) %>% 
+    select(-splits) %>% 
+    unnest(perm_preds) %>% 
+    # this puts them back into "datasets" by permutation iteration where each iteration has all subjects
+    nest(.by = id)
+  
+  out %<>% 
+    # now compute permuted accuracy & AUROC metrics
+    mutate(acc_perm = map(data, \(x) calc_metrics_nested_classprobs(x, 
+                                                                    grouping_cols = !!grouping_cols,
+                                                                    classprob_prefix = classprob_prefix), 
+                          .progress = "calculating perm-wise acc")) %>% 
+    # drop the actual permuted data for space saving
+    select(-data)
+  
+  return (out)
+}
+
+calc_metrics_nested_classprobs <- function (preds, grouping_cols = NULL, classprob_prefix = ".pred_outcome") {
+  grouping_cols <- enquo(grouping_cols)
+  
+  preds %>% 
+    unnest_wider(col = .preds) %>% 
+    group_by(pick(!!grouping_cols)) %>% 
+    metrics(truth = .obs, estimate = .pred, starts_with(classprob_prefix))
 }

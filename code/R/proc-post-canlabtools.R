@@ -12,7 +12,7 @@ threshold_tvals_pre_statmap <- function (tvals,
   if (!is.null(threshold_p)) {
     pvals <- tvals %>% 
       # get two-tailed p-values
-      map_dbl(\(x) if (is.nan(x)) {NaN} else if (x > 0) {pnorm(x, lower.tail = FALSE)} else {pnorm(x, lower.tail = TRUE)})
+      map_dbl(\(x) map_pval_from_tval(x))
     
     if (!is.na(p_adjust_method)) pvals <- p.adjust(pvals, method = p_adjust_method, n = sum(!is.nan(pvals)))
     tvals[pvals > threshold_p] <- 0
@@ -73,12 +73,27 @@ calc_controlled_pattern_discrim <- function (patterns_controlled,
     mutate(discrim_pred = map2(pattern_pred, betas_discrim, \(x, y) {
       out <- c(x %*% y)
       names(out) <- colnames(y)
-      return(out)
-      })) %>% 
-    select(subj_num, animal_type, direction, discrim_pred) %>% 
+      return(out[c("outcome_dog", "outcome_frog", "outcome_spider")])
+      }),
+      animal_type_pred = map_chr(discrim_pred, \(x) str_split_i(names(which.max(x)), "_", 2)),
+      across(starts_with("animal_type"), \(x) factor(x, levels = c("dog", "frog", "spider")))) %>% 
+    select(subj_num, animal_type, direction, discrim_pred, animal_type_pred) %>% 
     unnest_wider(discrim_pred)
   
   return (patterns)
+}
+
+calc_controlled_perf <- function (pattern_expression_controlled, cor_method = "pearson") {
+  pattern_expression_controlled %>% 
+    select(-activations, -betas) %>% 
+    unchop(cols = c(pattern, pattern_pred)) %>% 
+    group_by(direction, subj_num) %>% 
+    summarize(correlation = cor(pattern, pattern_pred, method = cor_method), .groups = "drop") %>% 
+    pivot_wider(names_from = direction, values_from = correlation) %>% 
+    mutate(diff = looming - receding) %>% 
+    summarize(across(c(looming, receding, diff),
+                     .fns = summary_stats_default),
+              cohens.d = cohens.d(looming, receding))
 }
 
 calc_controlled_pattern_expression <- function (patterns_controlled,
@@ -92,7 +107,9 @@ calc_controlled_pattern_expression <- function (patterns_controlled,
   
   patterns <- patterns_controlled %>% 
     calc_naturalistic_encoding_controlled_pred(activations, betas_encoding) %>% 
-    mutate(pattern_expression = map2_dbl(pattern_pred, pattern, \(x, y) x %*% y))
+    mutate(pattern_expression = map2_dbl(pattern_pred, pattern, \(x, y) x %*% y),
+           pred_obs_correlation = map2_dbl(pattern_pred, pattern, \(x, y) cor(x, y, method = "pearson")),
+           roi_avg_pred = map_dbl(pattern_pred, mean))
   
   return (patterns)
 }
@@ -188,9 +205,9 @@ compare_betas_encoding_category_selfreport <- function (betas_loom,
     filter(id != "Apparent") %>% 
     unnest(correlations) %>% 
     group_by(row, col) %>% 
-    summarize(cor_mean = mean(correlation), 
-              cor_ci95.lower = quantile(correlation, .025), 
-              cor_ci95.upper = quantile(correlation, .975), 
+    summarize(across(correlation,
+                     .fns = summary_stats_default,
+                     .names = "cor_{.fn}"), 
               .groups = "drop") %>% 
     left_join(apparent, by = c("row", "col"))
 
@@ -213,7 +230,9 @@ calc_perm_pval_object_by_pattern <- function (preds, perms, grouping_cols = NULL
     unnest(acc_perm) %>% 
     left_join(acc_true, by = join_by_cols, suffix = c("_perm", "_real")) %>% 
     group_by(.metric, pick(!!grouping_cols)) %>% 
-    summarize(estimate = unique(.estimate_real),
+    summarize(estimate_real = unique(.estimate_real),
+              # need this to report permuted chance levels
+              estimate_perm = median(.estimate_perm),
               pval = (sum(.estimate_perm > .estimate_real)+1)/(n()+1))
   
   return (out)
@@ -227,7 +246,6 @@ permute_acc_object_by_pattern <- function (preds, n_perms, outcome_categories = 
     # keep only cols required for computing accuracy
     select(subj_num, run_num, !!acc_grouping_cols, .obs, .preds, .pred) %>% 
     # nest blocks that will be kept together in permuting
-    # TODO: below line needs fixing to keep acc_grouping_cols
     nest(obs = .obs, pred = c(!!acc_grouping_cols, .preds, .pred), .by = c(subj_num, run_num)) %>% 
     # the n_trs stuff is to shorten all "runs" to the shortest one so that the permuted TR vectors will be the same length
     # because omitting the fixation TRs causes the runs no longer to have the same amount of data within or between subject
@@ -252,128 +270,12 @@ permute_acc_object_by_pattern <- function (preds, n_perms, outcome_categories = 
     unnest(perm_data) %>% 
     nest(.by = id)
   
-  if (outcome_categories == "looming") {
-    out %<>%
-      # for 2 classes, metrics only takes a single probability
-      mutate(data = map(data, \(x) mutate(x, .preds = map(.preds, \(y) y[1]))))
-  }
-  
   out %<>% 
     # now compute permuted accuracy & AUROC metrics
     mutate(acc_perm = map(data, \(x) calc_metrics_nested_classprobs(x, grouping_cols = !!acc_grouping_cols), 
                           .progress = "calculating perm-wise acc")) %>% 
     # drop the actual permuted data for space saving
     select(-data)
-  
-  return (out)
-}
-
-calc_metrics_nested_classprobs <- function (preds, grouping_cols = NULL, classprob_prefix = ".pred_outcome") {
-  grouping_cols <- enquo(grouping_cols)
-  
-  preds %>% 
-    unnest_wider(col = .preds) %>% 
-    group_by(pick(!!grouping_cols)) %>% 
-    metrics(truth = .obs, estimate = .pred, starts_with(classprob_prefix))
-}
-
-fit_object_by_pattern <- function (path_pattern_allsubs, 
-                                   events_allsubs, 
-                                   n_trs_kept_per_run, 
-                                   path_pattern_allsubs_2 = NULL,
-                                   pattern_type = c("bold", "encoding"), 
-                                   outcome_categories = c("object", "looming", "object_looming"),
-                                   n_pls_comp = 5) {
-  # just to save memory since these aren't used for this analysis
-  events_allsubs %<>%
-    select(-starts_with("rating"))
-  
-  stopifnot(length(pattern_type) == 1)
-  
-  if (pattern_type == "bold") {
-    
-    timecourses <- path_pattern_allsubs %>% 
-      load_bold_mat_allsubs() %>% 
-      select(-fold_num)
-  
-  } else if (pattern_type == "encoding") {
-    
-    timecourses <- load_encoding_pred_allsubs(path_pattern_allsubs)
-    
-    if (!is.null(path_pattern_allsubs_2)) {
-      timecourses %<>%
-        left_join(load_encoding_pred_allsubs(path_pattern_allsubs_2),
-                  by = c("subj_num", "tr_num"),
-                  suffix = c(".1", ".2"))
-    }
-  }
-  
-  out <- timecourses %>% 
-    left_join(events_allsubs, by = c("subj_num", "tr_num")) %>% 
-    # reconstruct run number here for later block permutation by run
-    mutate(run_num = (tr_num-1) %/% n_trs_kept_per_run) %>% 
-    # PHIL HAD SET UP HIS PRELIMINARY ANALYSIS TO EXCLUDE FIXATION TIMEPOINTS
-    filter(!is.na(animal_type), animal_type != "fixation")
-  
-  stopifnot(length(outcome_categories) == 1)
-  
-  if (outcome_categories == "object") {
-    out %<>%
-      rename(outcome = animal_type)
-  } else if (outcome_categories == "looming") {
-    out %<>%
-      mutate(outcome = if_else(has_loom == 1, "loom", "no.loom"))
-  } else if (outcome_categories == "object_looming") {
-    out %<>%
-      # when classifying the interaction of object and looming, drop food because it never looms
-      # to reduce imbalance
-      filter(animal_type != "food") %>% 
-      unite("outcome", animal_type, has_loom, sep = ".")
-  }
-  
-  out %<>% 
-    # x_prefix = "voxel" works for both bold and encoding (assuming encoding is always by space)
-    fit_model_xval(x_prefix = "voxel",
-                   y_prefix = "outcome",
-                   parsnip_model = set_engine(parsnip::pls(mode = "regression", num_comp = n_pls_comp), engine = "plsr", method = "simpls"),
-                   additional_recipe_steps = \(x) step_dummy(x, all_of("outcome"), role = "outcome", one_hot = TRUE, skip = TRUE),
-                   rm_x = TRUE,
-                   return_longer = FALSE) %>% 
-    # 2025-05-05: We want to save the betas out now too for subsequent second-order correlation analysis with the encoding.selfreport models
-    # the object is too large to save out if we keep all the model fits
-    mutate(coefs = map(model, 
-                       \(x) {
-                         model_obj <- extract_fit_engine(x)
-                         ncomp <- pluck(model_obj, "ncomp")
-                         coefficients <- pluck(model_obj, "coefficients")
-                         return(coefficients[ , , ncomp])
-                       },
-                       .progress = "extracting coefs")) %>% 
-    select(coefs, preds) %>% 
-    mutate(preds = map(preds, \(x) x %>% 
-                         rename(.obs = .obs_outcome) %>% 
-                         # at this point, .obs is just the original categorical column but .pred has the 5 columns from the one-hot outcome levels
-                         # bundle .obs and .pred together to make it easier to extract the max for each one as the class label
-                         nest(.preds = starts_with(".pred")) %>% 
-                         mutate(.preds = map(.preds, \(y) unlist(y)),
-                                # keep both the numeric PLS-DA "class predictions" and the label for the max class prediction
-                                # the former for ROC curves and the latter for straight-up accuracy
-                                .pred = map_chr(.preds, \(y) names(y)[y == max(y)])) %>% 
-                         # clean up class labels that were pulled from predictor col names
-                         mutate(.pred = str_split_i(.pred, "_", 3)) %>% 
-                         # and finally push everything back to factor for tidymodels accuracy etc
-                         mutate(.obs = factor(.obs),
-                                # patch all categories back in in case one is never predicted
-                                .pred = factor(.pred, levels = levels(.obs))),
-                       .progress = "cleaning up class predictions"),
-           subj_num = map_dbl(preds, \(x) unique(x$subj_num)),
-           preds = map(preds, \(x) select(x, -subj_num)))
-  
-  if (outcome_categories == "looming") {
-    out %<>%
-      # for 2 classes, metrics only takes a single probability
-      mutate(preds = map(preds, \(x) mutate(x, .preds = map(.preds, \(y) y[1]))))
-  }
   
   return (out)
 }
@@ -463,30 +365,10 @@ fit_object_by_pattern <- function (path_pattern_allsubs,
     mutate(coefs = map(model, \(x) extract_pls_workflow_coefs(x),
                        .progress = "extracting coefs")) %>% 
     select(coefs, preds) %>% 
-    mutate(preds = map(preds, \(x) x %>% 
-                         rename(.obs = .obs_outcome) %>% 
-                         # at this point, .obs is just the original categorical column but .pred has the 5 columns from the one-hot outcome levels
-                         # bundle .obs and .pred together to make it easier to extract the max for each one as the class label
-                         nest(.preds = starts_with(".pred")) %>% 
-                         mutate(.preds = map(.preds, \(y) unlist(y)),
-                                # keep both the numeric PLS-DA "class predictions" and the label for the max class prediction
-                                # the former for ROC curves and the latter for straight-up accuracy
-                                .pred = map_chr(.preds, \(y) names(y)[y == max(y)])) %>% 
-                         # clean up class labels that were pulled from predictor col names
-                         mutate(.pred = str_split_i(.pred, "_", 3)) %>% 
-                         # and finally push everything back to factor for tidymodels accuracy etc
-                         mutate(.obs = factor(.obs),
-                                # patch all categories back in in case one is never predicted
-                                .pred = factor(.pred, levels = levels(.obs))),
+    mutate(preds = map(preds, \(x) tidy_plsda_preds(x),
                        .progress = "cleaning up class predictions"),
            subj_num = map_dbl(preds, \(x) unique(x$subj_num)),
            preds = map(preds, \(x) select(x, -subj_num)))
-  
-  if (outcome_categories == "looming") {
-    out %<>%
-      # for 2 classes, metrics only takes a single probability
-      mutate(preds = map(preds, \(x) mutate(x, .preds = map(.preds, \(y) y[1]))))
-  }
   
   return (out)
 }
