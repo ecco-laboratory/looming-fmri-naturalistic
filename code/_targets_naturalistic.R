@@ -24,7 +24,7 @@ tar_option_set(
                "ggseg",
                "ggsegGlasser"), # packages that your targets need to run
   controller = crew.cluster::crew_controller_slurm(
-    workers = 8,
+    workers = 16,
     seconds_idle = 30,
     options_cluster = crew.cluster::crew_options_slurm(
       verbose = TRUE,
@@ -44,6 +44,7 @@ tar_source(c("code/R/utils/",
              "code/R/make-stimlist.R",
              "code/R/call-activations.R",
              "code/R/define-targets-fmri.R",
+             "code/R/parse-qualtrics.R",
              "code/R/parse-events.R",
              "code/R/parse-confounds.R",
              "code/R/parse-bold.R",
@@ -565,11 +566,10 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
              format = "file"),
   tar_map(
     values = crossing(events_type = c("events.raw", "events.endspike", "events.boxcartail"),
-                      n_categories = c("2cat", "5cat", "8cat")) %>% 
+                      outcome_category = c("loom", "obj", "obj.loom")) %>% 
       mutate(events_label = case_match(events_type, "events.raw" ~ "", "events.endspike" ~ ".endspike", "events.boxcartail" ~ ".boxcartail"),
-             outcome_category = case_match(n_categories, "2cat" ~ "looming", "5cat" ~ "object", "8cat" ~ "object_looming"),
              events_target = syms(sprintf("events.timecourse%s_all.subs", events_label))),
-    tar_target(name = encoding.object,
+    tar_target(name = encoding.decoding,
                command = pred.encoding.xval %>%
                  fit_object_by_pattern(events_allsubs = left_join(events_target,
                                                                   beh, 
@@ -577,10 +577,10 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
                                        n_trs_kept_per_run = task_defaults_list$n_trs_kept,
                                        pattern_type = "encoding",
                                        outcome_categories = outcome_category,
-                                       n_pls_comp = 20)
+                                       n_pls_comp = 40)
     ),
-    tar_rep(name = perm.acc_encoding.object,
-            command = encoding.object %>% 
+    tar_rep(name = perm.acc_encoding.decoding,
+            command = encoding.decoding %>% 
               select(subj_num, preds) %>% 
               unnest(preds) %>% 
               permute_acc_object_by_pattern(n_perms = 100, 
@@ -588,8 +588,8 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
             batches = 10,
             reps = 1
     ),
-    tar_rep(name = perm.acc_by.object_encoding.object,
-            command = encoding.object %>% 
+    tar_rep(name = perm.acc_by.category_encoding.decoding,
+            command = encoding.decoding %>% 
               select(subj_num, preds) %>% 
               unnest(preds) %>% 
               permute_acc_object_by_pattern(n_perms = 100, 
@@ -598,7 +598,7 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
             batches = 10,
             reps = 1
     ),
-    tar_target(name = encoding.object.nosplit,
+    tar_target(name = encoding.decoding.nosplit,
                command = pred.encoding.xval %>%
                  # TODO: WRITE ALTERNATE FUNCTION THAT DOESN'T RETURN THE PREDICTIONS, JUST THE BETAS
                  fit_object_by_pattern(events_allsubs = left_join(events_target,
@@ -610,7 +610,7 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
                                        n_pls_comp = 20,
                                        xval = FALSE)
     ),
-    names = c(n_categories, events_type)
+    names = c(outcome_category, events_type)
   ),
   tar_target(name = encoding.loom_space,
              command = pred.encoding.xval %>% 
@@ -722,12 +722,13 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
                                           roi = NULL,
                                           values = tvals.wb.model.connectivity,
                                           threshold_p = .05,
+                                          positive_only = TRUE,
                                           script = matlab_export_statmap)
              },
              format = "file"),
   tar_target(name = parcels.wb.connectivity,
              command = canlabtools_parcellate_avg(out_path = here::here("ignore", "outputs", sprintf("naturalistic_parcel_conn_%s_%s.csv", encoding_type_full, roi_name)),
-                                                  path_connectivity_allsubs = wb.model.connectivity,
+                                                  path_connectivity_allsubs_1 = wb.model.connectivity,
                                                   script = matlab_parcellate_avg),
              format = "file"),
   names = encoding_type_full
@@ -752,9 +753,8 @@ subtargets_fmri_canlabtools_by.roi <- tar_map(
               }),
   tar_map(
     values = crossing(events_type = c("events.raw", "events.endspike", "events.boxcartail"),
-                      n_categories = c("2cat", "5cat", "8cat")) %>% 
+                      outcome_category = c("loom", "obj", "obj.loom")) %>% 
       mutate(events_label = case_match(events_type, "events.raw" ~ "", "events.endspike" ~ ".endspike", "events.boxcartail" ~ ".boxcartail"),
-             outcome_category = case_match(n_categories, "2cat" ~ "looming", "5cat" ~ "object", "8cat" ~ "object_looming"),
              events_target = syms(sprintf("events.timecourse%s_all.subs", events_label))),
     tar_target(name = bold.object,
                command = bolds_all.subs %>%
@@ -775,7 +775,7 @@ subtargets_fmri_canlabtools_by.roi <- tar_map(
             batches = 10,
             reps = 1
     ),
-    tar_target(name = encoding.object_flynet.alexnet,
+    tar_target(name = encoding.decoding_flynet.alexnet,
                command = fit_object_by_pattern(path_pattern_allsubs = pred.encoding.xval_flynet.only_sc,
                                                events_allsubs = left_join(events_target,
                                                                           beh, 
@@ -786,8 +786,8 @@ subtargets_fmri_canlabtools_by.roi <- tar_map(
                                                outcome_categories = outcome_category,
                                                n_pls_comp = 20)
     ),
-    tar_rep(name = perm.acc_encoding.object_flynet.alexnet,
-            command = encoding.object_flynet.alexnet %>% 
+    tar_rep(name = perm.acc_encoding.decoding_flynet.alexnet,
+            command = encoding.decoding_flynet.alexnet %>% 
               select(subj_num, preds) %>% 
               unnest(preds) %>% 
               permute_acc_object_by_pattern(n_perms = 100, 
@@ -795,7 +795,7 @@ subtargets_fmri_canlabtools_by.roi <- tar_map(
             batches = 10,
             reps = 1
     ),
-    names = c(n_categories, events_type)
+    names = c(outcome_category, events_type)
   ),
   names = roi_name
 )
@@ -856,6 +856,13 @@ subtargets_fmri_canlabtools_compare.models <- tar_map(
                                           script = matlab_export_statmap)
              },
              format = "file"),
+  tar_target(name = parcels.wb.connectivity_flynet.minus.alexnet,
+             command = canlabtools_parcellate_avg(out_path = here::here("ignore", "outputs", sprintf("naturalistic_parcel_conn_flynet_minus_alexnet_%s.csv", roi_name)),
+                                                  path_connectivity_allsubs_1 = wb.model.connectivity.flynet,
+                                                  path_connectivity_allsubs_2 = wb.model.connectivity.alexnet,
+                                                  fun_compare = "minus",
+                                                  script = matlab_parcellate_avg),
+             format = "file"),
   tar_target(name = tvals.wb.model.connectivity_flynet.minus.alexnet,
              command = {
                connectivity.flynet <- vroom::vroom(wb.model.connectivity.flynet, 
@@ -882,30 +889,32 @@ subtargets_fmri_canlabtools_compare.models <- tar_map(
                  threshold_tvals_pre_statmap(threshold_p = .05)
                
                pmin(tvals.flynet, tvals.alexnet)
-
+               
              }),
   tar_target(name = statmap.wb.model.connectivity_flynet.minus.alexnet,
              command = {
                tvals_flynet <- vroom::vroom(wb.model.connectivity.flynet, 
-                                                   delim = ",", 
-                                                   col_names = FALSE, 
-                                                   col_types = c(.default = "d")) %>% 
+                                            delim = ",", 
+                                            col_names = FALSE, 
+                                            col_types = c(.default = "d")) %>% 
                  summarize_tvals_pre_statmap() %>% 
                  threshold_tvals_pre_statmap(threshold_p = .05)
                
                tvals_alexnet <- vroom::vroom(wb.model.connectivity.alexnet, 
-                                                    delim = ",", 
-                                                    col_names = FALSE, 
-                                                    col_types = c(.default = "d")) %>% 
+                                             delim = ",", 
+                                             col_names = FALSE, 
+                                             col_types = c(.default = "d")) %>% 
                  summarize_tvals_pre_statmap() %>% 
                  threshold_tvals_pre_statmap(threshold_p = .05)
                
-                 # there are many voxels where the difference is supra-threshold non-zero but the higher value isn't supra-threshold on its own
-                 # so for the diff statmap, zero out voxels ahead of time where the higher value on its own doesn't exceed 0
-                 tvals_diff <- tvals.wb.model.connectivity_flynet.minus.alexnet
-                 tvals_diff[tvals_diff > 0 & tvals_flynet <= 0] <- 0
-                 tvals_diff[tvals_diff < 0 & tvals_alexnet <= 0] <- 0
-                 
+               # there are many voxels where the difference is supra-threshold non-zero but the higher value isn't supra-threshold on its own
+               # so for the diff statmap, zero out voxels ahead of time where the higher value on its own doesn't exceed 0
+               # threshold_tvals_pre_statmap() retains only significant voxels as nonzero so this also has the effect 
+               # of only keeping a - b diff voxels where a is significantly positive
+               tvals_diff <- tvals.wb.model.connectivity_flynet.minus.alexnet
+               tvals_diff[tvals_diff > 0 & tvals_flynet <= 0] <- 0
+               tvals_diff[tvals_diff < 0 & tvals_alexnet <= 0] <- 0
+               
                canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb_conn_flynet_minus_alexnet_%s.nii", roi_name)),
                                           roi = NULL,
                                           values = tvals_diff,
@@ -982,10 +991,9 @@ subtargets_fmri_canlabtools_combined <- list(
                                                   "alexnet")
   ),
   tar_target(name = auroc.cross_encoding.discrim.looming_sc,
-             command = encoding.object_2cat_events.endspike_flynet.only_sc %>% 
+             command = encoding.decoding_loom_events.endspike_flynet.only_sc %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
-               filter(animal_type != "food") %>% 
                unnest_wider(.preds) %>% 
                mutate(is_dog = if_else(animal_type == "dog", "yes", "no"), 
                       is_cat = if_else(animal_type == "cat", "yes", "no"), 
@@ -1000,7 +1008,7 @@ subtargets_fmri_canlabtools_combined <- list(
                roc_auc(truth = animal_value, .pred_outcome_loom)
              ),
   tar_target(name = perm_auroc.cross_encoding.discrim.looming_sc,
-             command = encoding.object_2cat_events.endspike_flynet.only_sc %>% 
+             command = encoding.decoding_loom_events.endspike_flynet.only_sc %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
                filter(animal_type != "food") %>% 
@@ -1023,27 +1031,22 @@ subtargets_fmri_canlabtools_combined <- list(
                unnest(perm_auroc)
   ),
   tar_target(name = auroc.cross_encoding.discrim.object_sc,
-             command = encoding.object_5cat_events.endspike_alexnet.only_sc %>% 
+             command = encoding.decoding_obj_events.raw_alexnet.only_sc %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
-               filter(.obs != "food") %>% 
                unnest_longer(.preds, values_to = ".pred_animal", indices_to = "animal_to_use") %>% 
-               filter(animal_to_use != ".pred_outcome_food") %>% 
                mutate(has_loom = fct_recode(as.character(has_loom), "yes" = "1", "no" = "0"), 
                       has_loom = fct_relevel(has_loom, "yes")) %>% 
                group_by(animal_to_use) %>% 
                roc_auc(truth = has_loom, .pred_animal)
   ),
   tar_target(name = perm_auroc.cross_encoding.discrim.object_sc,
-             command = encoding.object_5cat_events.endspike_alexnet.only_sc %>% 
+             command = encoding.decoding_obj_events.raw_alexnet.only_sc %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
-               filter(.obs != "food") %>% 
-               mutate(.preds = map(.preds, \(x) x[!grepl("food", names(x))])) %>% 
                permutations(permute = has_loom, times = 1000) %>% 
                mutate(perm_auroc = map(splits, \(x) analysis(x) %>% 
                                          unnest_longer(.preds, values_to = ".pred_animal", indices_to = "animal_to_use") %>% 
-                                         filter(animal_to_use != ".pred_outcome_food") %>% 
                                          mutate(has_loom = fct_recode(as.character(has_loom), "yes" = "1", "no" = "0"), 
                                                 has_loom = fct_relevel(has_loom, "yes")) %>% 
                                          group_by(animal_to_use) %>% 
@@ -1059,7 +1062,9 @@ subtargets_fmri_canlabtools_combined <- list(
 # you must tar_make the original controlled targets for that tracking
 #  but if you do tar_make controlled, then the correct naturalistic dependency targets will be marked as out of date
 
-metadata_videos_nback <- tar_read(metadata_videos_nback, store = here::here("ignore", "_targets", "controlled"))
+store_controlled <- here::here("ignore", "_targets", "controlled")
+metadata_videos_nback <- tar_read(metadata_videos_nback, store = store_controlled)
+plot_controlled_norms <- tar_read(plot_norms, store = store_controlled)
 
 targets_controlled <- list(
   tar_target(activations.flynet_raw_controlled,
@@ -1118,7 +1123,7 @@ targets_controlled <- list(
                                                        activations.alexnet_raw_controlled,
                                                        metadata_videos_nback,
                                                        betas.encoding.xval_alexnet.only_sc,
-                                                       encoding.object_5cat_events.endspike_alexnet.only_sc))
+                                                       encoding.decoding_obj_events.endspike_alexnet.only_sc))
 )
 
 ## overall summary stat targets ----
@@ -1238,27 +1243,14 @@ subtargets_fmri_summary <- list(
                          .groups = "drop")
   ),
   tar_target(name = summary_encoding.discrim.looming_sc,
-             command = {
-               flynet <- calc_perm_pval_object_by_pattern(preds = encoding.object_2cat_events.endspike_flynet.only_sc, 
-                                                          perms = perm.acc_encoding.object_2cat_events.endspike_flynet.only_sc)
-               alexnet <- calc_perm_pval_object_by_pattern(preds = encoding.object_2cat_events.endspike_alexnet.only_sc, 
-                                                           perms = perm.acc_encoding.object_2cat_events.endspike_alexnet.only_sc)
-               bind_rows(flynet = flynet,
-                         alexnet = alexnet,
-                         .id = "encoding_type")
-               }),
+             command = calc_perm_pval_object_by_pattern(preds = encoding.decoding_loom_events.endspike_flynet.only_sc, 
+                                                        perms = perm.acc_encoding.decoding_loom_events.endspike_flynet.only_sc)
+  ),
   tar_target(name = summary_encoding.discrim.looming_by.category_sc,
-             command = {
-               flynet <- calc_perm_pval_object_by_pattern(preds = encoding.object_2cat_events.endspike_flynet.only_sc, 
-                                                          perms = perm.acc_by.object_encoding.object_2cat_events.endspike_flynet.only_sc,
+             command = calc_perm_pval_object_by_pattern(preds = encoding.decoding_loom_events.endspike_flynet.only_sc, 
+                                                          perms = perm.acc_by.category_encoding.decoding_loom_events.endspike_flynet.only_sc,
                                                           grouping_cols = animal_type)
-               alexnet <- calc_perm_pval_object_by_pattern(preds = encoding.object_2cat_events.endspike_alexnet.only_sc, 
-                                                           perms = perm.acc_by.object_encoding.object_2cat_events.endspike_alexnet.only_sc,
-                                                           grouping_cols = animal_type)
-               bind_rows(flynet = flynet,
-                         alexnet = alexnet,
-                         .id = "encoding_type")
-             }),
+             ),
   tar_target(name = summary_auroc.cross_encoding.discrim.looming_sc,
              command = left_join(perm_auroc.cross_encoding.discrim.looming_sc, auroc.cross_encoding.discrim.looming_sc, 
                                  by = c("animal_to_guess", ".metric", ".estimator"),
@@ -1270,15 +1262,9 @@ subtargets_fmri_summary <- list(
                          .estimate_perm = median(.estimate_perm)) %>% 
                select(animal_to_guess, .estimate_real, .estimate_perm, pval)),
   tar_target(name = summary_encoding.discrim.object_sc,
-             command = {
-               flynet <- calc_perm_pval_object_by_pattern(preds = encoding.object_5cat_events.endspike_flynet.only_sc, 
-                                                          perms = perm.acc_encoding.object_5cat_events.endspike_flynet.only_sc)
-               alexnet <- calc_perm_pval_object_by_pattern(preds = encoding.object_5cat_events.endspike_alexnet.only_sc, 
-                                                           perms = perm.acc_encoding.object_5cat_events.endspike_alexnet.only_sc)
-               bind_rows(flynet = flynet,
-                         alexnet = alexnet,
-                         .id = "encoding_type")
-             }),
+             command = calc_perm_pval_object_by_pattern(preds = encoding.decoding_obj_events.raw_alexnet.only_sc, 
+                                                        perms = perm.acc_encoding.decoding_obj_events.raw_alexnet.only_sc)
+  ),
   tar_target(name = summary_auroc.cross_encoding.discrim.object_sc,
              command = left_join(perm_auroc.cross_encoding.discrim.object_sc, auroc.cross_encoding.discrim.object_sc, 
                                  by = c("animal_to_use", ".metric", ".estimator"),
@@ -1330,13 +1316,13 @@ subtargets_fmri_summary <- list(
   tar_target(generalization.controlled_flynet_sc,
              command = calc_controlled_perf(pattern.activation.controlled_flynet_sc)),
   tar_target(name = beta.comparison_object.selfreport_flynet_sc,
-             command = compare_betas_encoding_category_selfreport(encoding.object.nosplit_2cat_events.endspike_flynet.only_sc,
-                                                                  encoding.object.nosplit_5cat_events.endspike_flynet.only_sc,
+             command = compare_betas_encoding_category_selfreport(encoding.decoding.nosplit_loom_events.endspike_flynet.only_sc,
+                                                                  encoding.decoding.nosplit_obj_events.endspike_flynet.only_sc,
                                                                   encoding.selfreport.nosplit_flynet.only_sc,
                                                                   n_bootstraps = 5000)),
   tar_target(name = beta.comparison_object.selfreport_alexnet_sc,
-             command = compare_betas_encoding_category_selfreport(encoding.object.nosplit_2cat_events.endspike_alexnet.only_sc,
-                                                                  encoding.object.nosplit_5cat_events.endspike_alexnet.only_sc,
+             command = compare_betas_encoding_category_selfreport(encoding.decoding.nosplit_loom_events.endspike_alexnet.only_sc,
+                                                                  encoding.decoding.nosplit_obj_events.endspike_alexnet.only_sc,
                                                                   encoding.selfreport.nosplit_alexnet.only_sc,
                                                                   n_bootstraps = 5000))
 )
@@ -1420,6 +1406,15 @@ if (FALSE) {
 ## targets: behavioral data ----
 
 targets_beh <- list(
+  tar_target(name = norms_qualtrics_all.stimuli,
+             command = get_splat_stimulus_norms_qualtrics()),
+  tar_target(name = norms_qualtrics,
+             command = join_raw_norms_to_stim_labels(norms_qualtrics_all.stimuli, 
+                                                     read_csv(annotations_videos) %>% 
+                                                       select(-ignore) %>% 
+                                                       rename(animal_type = animal),
+                                                     loom_col = "has_loom")
+  ),
   tar_files(name = beh.raw,
             # now filters for files belonging to subjects marked as usable in participants.tsv
             command = {
@@ -1466,69 +1461,6 @@ targets_beh <- list(
   )
 )
 
-targets_beh_old <- list(
-  # from 3 colleagues I was able to shake down for ratings in March 2024, lol
-  tar_files(name = norms_inperson_raw,
-            command = list.files(here::here("ignore", "data", "norm"),
-                                 recursive = TRUE,
-                                 full.names = TRUE) %>% 
-              .[!grepl("debug", .)]
-  ),
-  tar_target(name = norms_inperson,
-             command = norms_inperson_raw %>% 
-               read_csv(na = c("", "NA", "None")),
-             pattern = map(norms_inperson_raw)),
-  tar_target(
-    name = norms_qualtrics,
-    command = {
-      annotations_naturalistic <- read_csv(annotations_videos)
-      annotations_controlled <- metadata_videos_nback %>% 
-        left_join(read_csv(qualtrics.ids_videos_controlled), by = "filename") %>% 
-        # to get the cols in the same format as the naturalistic annotations
-        mutate(has_loom = as.numeric(direction == "looming")) %>% 
-        select(video_id = filename, qualtrics_id, animal = animal_type, has_loom, hemifield)
-      
-      annotations <- bind_rows(naturalistic = annotations_naturalistic, 
-                               controlled = annotations_controlled,
-                               .id = "stim_type")
-        
-      
-      # TODO: Make sure your qualtrics API token is reproducible yet safe from prying eyes
-      # TODO also: set up another target so that targets will think the survey is updated when it is
-      qualtrics_data <- fetch_survey("SV_6nZOkqUU0MEAnMa",
-                                     include_display_order = FALSE)
-      
-      video_qualtrics_ids <- qualtrics_data %>% 
-        select(contains("caption")) %>% 
-        sjlabelled::get_label() 
-      
-      df_video_qualtrics_ids <- tibble(video_num = names(video_qualtrics_ids),
-                                       qualtrics_id = video_qualtrics_ids %>% 
-                                         str_split_i(pattern = " ", i = 1)) %>% 
-        separate_wider_regex(cols = video_num,
-                             patterns = c(video_num = "[[:digit:]]+",
-                                          "_[[:alpha:]]+",
-                                          block_num = "[[:digit:]]+")) %>% 
-        mutate(across(ends_with("num"), as.integer))
-      
-      qualtrics_data %>% 
-        filter(Status != "Survey Preview", participantId_check != "test") %>% 
-        select(-contains("quit"), -starts_with("Recipient"), -DistributionChannel, -UserLanguage) %>% 
-        pivot_longer(cols = c(contains("caption"), 
-                              contains("pleasantness"), 
-                              contains("arousal"), 
-                              contains("fear")), 
-                     names_to = c("video_num", ".value", "block_num"), 
-                     names_pattern = "([[:digit:]]+)_([[:alpha:]]+)([[:digit:]]+)",
-                     names_transform = list(video_num = as.integer,
-                                            block_num = as.integer)) %>% 
-        left_join(df_video_qualtrics_ids, by = c("video_num", "block_num")) %>% 
-        left_join(annotations,
-                  by = "qualtrics_id")
-    }
-  )
-)
-
 ## targets: plots for showing ----
 
 this_theme <- theme_bw(base_size = 16) +
@@ -1541,12 +1473,15 @@ theme_brain <- theme_void(base_size = 16) +
 
 targets_plots <- list(
   tar_target(plot_ratings,
-             command = plot_selfreport_ratings(beh) +
+             command = beh %>% 
+               relabel_cols_for_plot_naturalistic() %>% 
+               plot_selfreport_ratings() +
                  this_theme
   ),
   tar_target(plot_ratings_nofood,
              command = beh %>% 
                filter(animal_type != "food") %>% 
+               relabel_cols_for_plot_naturalistic() %>% 
                plot_selfreport_ratings() +
                this_theme
   ),
@@ -1598,20 +1533,12 @@ targets_plots <- list(
                plot_encoding_performance_pcor() +
                this_theme
   ),
-  tar_target(plot_encoding.discrim.looming_acc,
-             command = plot_encoding_object_acc(summary_encoding.discrim.looming_sc,
-                                                y_description = "looming vs. non-looming",
-                                                encoding_labels = c("looming" = "flynet", 
-                                                                    "object" = "alexnet")) +
-               this_theme
-  ),
   tar_target(plot_encoding.confusion.looming,
-             command = bind_rows(looming = encoding.object_2cat_events.endspike_flynet.only_sc,
-                                 object = encoding.object_2cat_events.endspike_alexnet.only_sc,
+             command = bind_rows(looming = encoding.decoding_loom_events.endspike_flynet.only_sc,
+                                 object = encoding.decoding_loom_events.endspike_alexnet.only_sc,
                                  .id = "model_type") %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
-               filter(animal_type != "food") %>% 
                mutate(across(c(.obs, .pred), \(x) fct_recode(x,
                                                              "looming" = "loom",
                                                              "no looming" = "no.loom")),
@@ -1622,10 +1549,9 @@ targets_plots <- list(
                theme(aspect.ratio = 1)
   ),
   tar_target(plot_encoding.confusion.looming_flynet,
-             command = encoding.object_2cat_events.endspike_flynet.only_sc %>% 
+             command = encoding.decoding_loom_events.endspike_flynet.only_sc %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
-               filter(animal_type != "food") %>% 
                mutate(across(c(.obs, .pred), \(x) fct_recode(x,
                                                              "looming" = "loom",
                                                              "no looming" = "no.loom"))) %>% 
@@ -1633,22 +1559,24 @@ targets_plots <- list(
                this_theme +
                theme(aspect.ratio = 1)
   ),
-  tar_target(plot_encoding.discrim.object_acc,
-             command = plot_encoding_object_acc(summary_encoding.discrim.object_sc,
-                                                y_description = "object category, 5 class",
-                                                encoding_labels = c("looming" = "flynet", 
-                                                                    "object" = "alexnet")) +
-               this_theme
+  tar_target(plot_encoding.confusion.looming_flynet_events.raw,
+             command = encoding.decoding_loom_events.raw_flynet.only_sc %>% 
+               select(-coefs) %>% 
+               unnest(preds) %>% 
+               mutate(across(c(.obs, .pred), \(x) fct_recode(x,
+                                                             "looming" = "loom",
+                                                             "no looming" = "no.loom"))) %>% 
+               plot_confusion() +
+               this_theme +
+               theme(aspect.ratio = 1)
   ),
   tar_target(plot_encoding.confusion.object,
-             command = bind_rows(looming = encoding.object_5cat_events.endspike_flynet.only_sc,
-                                 object = encoding.object_5cat_events.endspike_alexnet.only_sc,
+             command = bind_rows(looming = encoding.decoding_obj_events.endspike_flynet.only_sc,
+                                 object = encoding.decoding_obj_events.raw_alexnet.only_sc,
                                  .id = "model_type") %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
-               filter(.obs != "food", .pred != "food") %>% 
                mutate(across(c(.obs, .pred), \(x) x %>% 
-                               fct_drop(only = "food") %>% 
                                fct_relevel("dog", "cat", "frog", "spider")),
                       has_loom = if_else(has_loom == 1, "looming", "no looming"),
                       model_type = paste0(model_type, " encoding")) %>% 
@@ -1658,20 +1586,18 @@ targets_plots <- list(
                theme(aspect.ratio = 1)
   ),
   tar_target(plot_encoding.confusion.object_alexnet,
-             command = encoding.object_5cat_events.endspike_alexnet.only_sc %>% 
+             command = encoding.decoding_obj_events.raw_alexnet.only_sc %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
-               filter(.obs != "food", .pred != "food") %>% 
                mutate(across(c(.obs, .pred), \(x)  x %>% 
-                               fct_drop(only = "food") %>% 
                                fct_relevel("dog", "cat", "frog", "spider"))) %>% 
                plot_confusion() +
                this_theme +
                theme(aspect.ratio = 1)
   ),
-  tar_target(plot_encoding.object_8cat_confusion_flynet.alexnet,
-             command = bind_rows(looming = encoding.object_8cat_events.endspike_flynet.only_sc,
-                                 object = encoding.object_8cat_events.endspike_alexnet.only_sc,
+  tar_target(plot_encoding.decoding_8cat_confusion_flynet.alexnet,
+             command = bind_rows(looming = encoding.decoding_8cat_events.endspike_flynet.only_sc,
+                                 object = encoding.decoding_8cat_events.endspike_alexnet.only_sc,
                                  .id = "model_type") %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
@@ -1714,45 +1640,133 @@ targets_plots <- list(
              command = parcels.wb.connectivity_flynet.only_sc %>% 
                get_parcel_tvals_long() %>% 
                label_parcel_pvals_long() %>% 
-               plot_parcel_connectivity(fill_col = tval,
-                                        pval_col = pval,
-                                        ggseg_sides = c("lateral", "medial"),
-                                        ggseg_position = hemi ~ side,
-                                        max_fill_tval=5,
-                                        viridis_palette = "magma") + 
+               plot_parcel_connectivity_ggseg(fill_col = tval,
+                                              pval_col = pval,
+                                              ggseg_sides = c("lateral", "medial"),
+                                              ggseg_position = hemi ~ side,
+                                              max_fill_tval = 10,
+                                              viridis_palette = "magma") + 
                theme_brain
   ),
   tar_target(name = plot_ggseg.conn_flynet_dors.vent,
              command = parcels.wb.connectivity_flynet.only_sc %>% 
                get_parcel_tvals_long() %>% 
                label_parcel_pvals_long() %>% 
-               plot_parcel_connectivity(fill_col = tval,
-                                        pval_col = pval,
-                                        ggseg_sides = c("dorsal", "ventral"),
-                                        max_fill_tval=5,
-                                        viridis_palette = "magma") + 
+               plot_parcel_connectivity_ggseg(fill_col = tval,
+                                              pval_col = pval,
+                                              ggseg_sides = c("dorsal", "ventral"),
+                                              max_fill_tval = 10,
+                                              viridis_palette = "magma") + 
                theme_brain
   ),
   tar_target(name = plot_ggseg.conn_alexnet_lat.med,
              command = parcels.wb.connectivity_alexnet.only_sc %>% 
                get_parcel_tvals_long() %>% 
                label_parcel_pvals_long() %>% 
-               plot_parcel_connectivity(fill_col = tval,
-                                        pval_col = pval,
-                                        ggseg_sides = c("lateral", "medial"),
-                                        ggseg_position = hemi ~ side,
-                                        max_fill_tval=5) + 
+               plot_parcel_connectivity_ggseg(fill_col = tval,
+                                              pval_col = pval,
+                                              ggseg_sides = c("lateral", "medial"),
+                                              ggseg_position = hemi ~ side,
+                                              max_fill_tval = 10) + 
                theme_brain
   ),
   tar_target(name = plot_ggseg.conn_alexnet_dors.vent,
              command = parcels.wb.connectivity_alexnet.only_sc %>% 
                get_parcel_tvals_long() %>% 
                label_parcel_pvals_long() %>% 
-               plot_parcel_connectivity(fill_col = tval,
-                                        pval_col = pval,
-                                        ggseg_sides = c("dorsal", "ventral"),
-                                        max_fill_tval=5) + 
+               plot_parcel_connectivity_ggseg(fill_col = tval,
+                                              pval_col = pval,
+                                              ggseg_sides = c("dorsal", "ventral"),
+                                              max_fill_tval = 10) + 
                theme_brain
+  ),
+  tar_target(name = preplot_ggseg.conn_conj,
+             command = {
+               flynet <- parcels.wb.connectivity_flynet.only_sc
+               alexnet <- parcels.wb.connectivity_alexnet.only_sc
+               diffs <- get_parcel_diff_tvals(flynet, alexnet) %>% 
+                 label_parcel_pvals_long() %>% 
+                 rename(tval_diff = tval, pval_diff = pval)
+               
+               conjs <- get_parcel_conjunctions(flynet, alexnet)
+               
+               left_join(diffs, conjs, by = "label") %>% 
+                 mutate(level_conjunction = if_else(tval_conj > 0, "conjunction", NA_character_),
+                        # only label the diff when the higher value is also itself _significantly_ above 0
+                        level_diff = case_when(tval_diff > 0 & tval_1 > 0 & pval_1 < .05 ~ "looming > object",
+                                               tval_diff < 0 & tval_2 > 0 & pval_2 < .05 ~ "object > looming",
+                                               TRUE ~ NA_character_),
+                        superregion = case_when(grepl("IFJ", label) | grepl("FEF", label) ~ "prefrontal",
+                                                grepl("FFC", label) ~ "ventral temporal",
+                                                grepl("IPS1", label) | grepl("MIP", label) | grepl("LIP", label) ~ "superior parietal",
+                                                grepl("5mv", label) ~ "medial parietal",
+                                                TRUE ~ NA_character_),
+                        outline = !is.na(superregion))
+               }
+  ),
+  tar_target(name = plot_ggseg.conn_conj_lat.med,
+             command = preplot_ggseg.conn_conj %>% 
+               plot_parcel_connectivity_ggseg(fill_col = tval_conj,
+                                              pval_col = pval_conj,
+                                              ggseg_sides = c("lateral", "medial"),
+                                              ggseg_position = hemi ~ side,
+                                              max_fill_tval = 10,
+                                              viridis_palette = "plasma") + 
+               theme_brain
+  ),
+  tar_target(name = plot_ggseg.conn_conj_dors.vent,
+             command = preplot_ggseg.conn_conj %>% 
+               plot_parcel_connectivity_ggseg(fill_col = tval_conj,
+                                              pval_col = pval_conj,
+                                              ggseg_sides = c("dorsal", "ventral"),
+                                              max_fill_tval = 10,
+                                              viridis_palette = "plasma") + 
+               theme_brain
+  ),
+  tar_target(name = plot_ggseg.conn_conj.diff_lat.med,
+             command = preplot_ggseg.conn_conj %>% 
+               # order matters for coalesce, if both have a value use the diff label
+               mutate(significance_color = case_when(level_diff == "looming > object" & pval_diff < .05 ~ level_diff,
+                                                     level_diff == "object > looming" & pval_diff < .05 ~ level_diff,
+                                                     !is.na(level_conjunction) & pval_conj < .05 ~ level_conjunction,
+                                                     TRUE ~ NA_character_)) %>% 
+               plot_parcel_connectivity_ggseg_cat(fill_col = significance_color,
+                                                  # then outline target parcels
+                                                  outline_col = outline,
+                                                  ggseg_sides = c("lateral", "medial"),
+                                                  ggseg_position = hemi ~ side) + 
+               theme_brain
+  ),
+  tar_target(name = plot_ggseg.conn_conj.diff_dors.vent,
+             command = preplot_ggseg.conn_conj %>% 
+               mutate(significance_color = case_when(level_diff == "looming > object" & pval_diff < .05 ~ level_diff,
+                                                     level_diff == "object > looming" & pval_diff < .05 ~ level_diff,
+                                                     !is.na(level_conjunction) & pval_conj < .05 ~ level_conjunction,
+                                                     TRUE ~ NA_character_)) %>% 
+               plot_parcel_connectivity_ggseg_cat(fill_col = significance_color,
+                                                  outline_col = outline,
+                                                  ggseg_sides = c("dorsal", "ventral")) + 
+               theme_brain
+             ),
+  tar_target(name = plot_conn_scatter,
+             command =  bind_rows(looming = get_parcel_values_long(parcels.wb.connectivity_flynet.only_sc), 
+                                  object = get_parcel_values_long(parcels.wb.connectivity_alexnet.only_sc),
+                                  .id = "model_type") %>% 
+               relabel_glasser_clt2ggseg() %>% 
+               filter(region %in% c("IFJa", "IFJp",
+                                    "FEF",
+                                    "FFC",
+                                    "IPS1", "MIP", "LIPv", "LIPd",
+                                    "5mv")) %>% 
+               mutate(superregion = case_when(startsWith(region, "IFJ") | region == "FEF" ~ "prefrontal",
+                                              region == "FFC" ~ "ventral\ntemporal",
+                                              grepl("IP", region) ~ "superior\nparietal",
+                                              region == "5mv" ~ "medial\nparietal",
+                                              TRUE ~ NA_character_)) %>% 
+               plot_parcel_connectivity_scatter(color_col = model_type,
+                                                facet_col = superregion) +
+               this_theme +
+               labs(color = "Connectivity type")
   )
 )
 
@@ -1842,14 +1856,6 @@ targets_plots.rdm <- list(
 
 ### plots for supplemental figures, set off for convenience ----
 targets_plots_supp <- list(
-  tar_target(plot_encoding.discrim.looming_by.category_acc,
-             command = plot_encoding_object_acc_by_object(summary_encoding.discrim.looming_by.category_sc,
-                                                          y_description = "looming vs. non-looming",
-                                                          encoding_labels = c("looming" = "flynet", 
-                                                                              "object" = "alexnet")) +
-               guides(x = guide_axis(angle = 30)) +
-               this_theme
-  ),
   tar_target(plot_alexnet.guesses,
              command = plot_predicted_alexnet_categories(activations.alexnet_raw,
                                                          stims %>% 
@@ -1967,9 +1973,9 @@ targets_figs_sans2025 <- list(
                               height = 1600,
                               units = "px"),
              format = "file"),
-  tar_target(fig_sans2025_encoding.object_confusion_flynet.alexnet,
+  tar_target(fig_sans2025_encoding.decoding_confusion_flynet.alexnet,
              command = ggsave(here::here("ignore", "figs", "sans2025_naturalistic_encoding_object_confusion_flynet.alexnet_sc.png"),
-                              plot = plot_encoding.object_confusion_flynet.alexnet +
+                              plot = plot_encoding.decoding_confusion_flynet.alexnet +
                                 theme(aspect.ratio = 1,
                                       strip.text = element_text(size = rel(1))),
                               width = 4200,
@@ -1990,7 +1996,7 @@ targets_figs_sans2025 <- list(
 
 colors_ms_loom.noloom <- c("Looming" = "#ff1fbc", "No looming" = "#ce57aa")
 colors_ms_looming.object <- c("looming" = "#ff1fbc", "object" = "#28afb0")
-
+colors_ms_looming.object.conj <- c("looming > object" = "#ff1fbc", "object > looming" = "#28afb0", "conjunction" = "#9467b6")
 
 targets_figs.ms <- list(
   tar_target(fig_ms_encoding.perf_flynet.alexnet_sc,
@@ -2031,6 +2037,17 @@ targets_figs.ms <- list(
                               height = 1400,
                               units = "px"),
              format = "file"),
+  tar_target(fig_ms_conn_scatter,
+             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_conn.scatter.png"),
+                              plot = plot_conn_scatter + 
+                                scale_color_manual(values = colors_ms_looming.object, na.translate = FALSE) +
+                                theme(legend.position = "inside",
+                                      legend.position.inside = c(0,1),
+                                      legend.justification.inside = c(0,1)),
+                              width = 2400,
+                              height = 3000,
+                              units = "px"),
+             format = "file"),
   tar_target(name = fig_ms_ratings,
              command = ggsave(here::here("ignore", "figs", "ms_naturalistic_ratings.png"),
                               plot = plot_ratings_nofood +
@@ -2049,12 +2066,18 @@ targets_figs.ms <- list(
                               height = 800,
                               units = "px"),
              format = "file"),
-  tar_target(fig_ms.supp_beta.comparison_object.selfreport_bottom.only,
+  tar_target(fig_ms_beta.comparison_object.selfreport_bottom.only,
              command = ggsave(here::here("ignore", "figs", "ms_naturalistic_beta.comparison_object.selfreport_bottom.only.png"),
                               plot = plot_beta.comparison_object.selfreport_bottom.only,
                               width = 4200,
                               height = 1000,
                               units = "px"),
+             format = "file"),
+  tar_target(name = fig_ms_statmaps_pre.mricrogl,
+             command = vctrs::vec_c(flynet = statmap.wb.model.connectivity_flynet.only_sc,
+                                    alexnet = statmap.wb.model.connectivity_alexnet.only_sc,
+                                    conjunction = statmap.wb.model.connectivity_flynet.conj.alexnet_sc,
+                                    difference = statmap.wb.model.connectivity_flynet.minus.alexnet_sc),
              format = "file")
 )
 
@@ -2080,6 +2103,17 @@ targets_figs.ms.supp <- list(
                               height = 1600,
                               units = "px"),
              format = "file"),
+  tar_target(fig_ms.supp_norms.controlled,
+             command = ggsave(here::here("ignore", "figs", "ms.supp_naturalistic_norms.controlled.png"),
+                              plot = plot_controlled_norms +
+                                this_theme +
+                                theme(legend.position = "inside", 
+                                      legend.position.inside = c(0,0), 
+                                      legend.justification = c(0,0)),
+                              width = 2000,
+                              height = 1200,
+                              units = "px"),
+             format = "file"),
   tar_target(fig_ms.supp_beta.comparison_object.selfreport,
              command = ggsave(here::here("ignore", "figs", "ms.supp_naturalistic_beta.comparison_object.selfreport.png"),
                               plot = plot_beta.comparison_object.selfreport,
@@ -2095,8 +2129,22 @@ targets_figs.ms.supp <- list(
                                 height = 2000,
                                 units = "px"),
                format = "file"),
-    values = crossing(encoding_type = c("flynet", "alexnet"),
+    values = crossing(encoding_type = c("flynet", "alexnet", "conj"),
                       ggseg_side = c("lat.med", "dors.vent")) %>% 
+      mutate(plot_name = syms(paste("plot_ggseg.conn", encoding_type, ggseg_side, sep = "_")),
+             target_name = syms(paste("fig_ms.supp_ggseg.conn", encoding_type, ggseg_side, sep = "_")),
+             fig_path = here::here("ignore", "figs", sprintf("ms.supp_naturalistic_ggseg.conn_%s_%s.png", encoding_type, ggseg_side)))
+  ),
+  tar_eval(
+    tar_target(name = target_name,
+               command = ggsave(fig_path,
+                                plot = plot_name +
+                                  scale_fill_manual(values = colors_ms_looming.object.conj),
+                                width = 4000,
+                                height = 2000,
+                                units = "px"),
+               format = "file"),
+    values = tibble(encoding_type = "conj.diff", ggseg_side = c("lat.med", "dors.vent")) %>% 
       mutate(plot_name = syms(paste("plot_ggseg.conn", encoding_type, ggseg_side, sep = "_")),
              target_name = syms(paste("fig_ms.supp_ggseg.conn", encoding_type, ggseg_side, sep = "_")),
              fig_path = here::here("ignore", "figs", sprintf("ms.supp_naturalistic_ggseg.conn_%s_%s.png", encoding_type, ggseg_side)))

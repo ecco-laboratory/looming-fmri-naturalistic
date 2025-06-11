@@ -8,6 +8,9 @@ addpath(genpath('/home/data/eccolab/Code/GitHub/Neuroimaging_Pattern_Masks'));
 
 % path_fmri_data: path to CSV input file with subjects (or whatever) on the rows and fmri_data whole brain voxel on the columns
 % must have come from canlabtools cause it's going back into canlabtools
+% path_fmri_data_2: optional, like path_fmri_data. if specified, will be loaded in and combined with the fmri_data in path_fmri_data 
+% using the specified arithmetic operator (to calculate a voxelwise comparison before averaging voxels within parcel)
+% fun_compare: if path_fmri_data_2 is specified, this should be the name of the comparator function as a string. goes into feval()
 % out_path: full path to write CSV output file of parcel avgs.
 % nifti name (e.g., subject) on the rows and parcel on the columns
 
@@ -19,6 +22,12 @@ addpath(genpath('/home/data/eccolab/Code/GitHub/Neuroimaging_Pattern_Masks'));
 data = fmri_data('/home/data/eccolab/SPLaT_fMRI/ignore/models/task-naturalistic/acq-mb8/sub-0001/model-boxcar/smoothed-4mm/beta_0001.nii');
 
 wb_data = readmatrix(path_fmri_data);
+
+if exist('path_fmri_data_2', 'var') == 1
+    wb_data_2 = readmatrix(path_fmri_data_2);
+    wb_data = feval(fun_compare, wb_data, wb_data_2);
+end
+
 % transpose again, remember, fmri_data.dat needs voxels on the row
 data.dat = wb_data';
 

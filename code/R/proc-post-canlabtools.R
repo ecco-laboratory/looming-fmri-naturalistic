@@ -285,7 +285,7 @@ fit_object_by_pattern <- function (path_pattern_allsubs,
                                    n_trs_kept_per_run, 
                                    path_pattern_allsubs_2 = NULL,
                                    pattern_type = c("bold", "encoding"), 
-                                   outcome_categories = c("object", "looming", "object_looming"),
+                                   outcome_categories = c("obj", "loom", "obj.loom"),
                                    n_pls_comp = 5,
                                    xval = TRUE) {
   # just to save memory since these aren't used for this analysis
@@ -316,22 +316,20 @@ fit_object_by_pattern <- function (path_pattern_allsubs,
     left_join(events_allsubs, by = c("subj_num", "tr_num")) %>% 
     # reconstruct run number here for later block permutation by run
     mutate(run_num = (tr_num-1) %/% n_trs_kept_per_run) %>% 
-    # PHIL HAD SET UP HIS PRELIMINARY ANALYSIS TO EXCLUDE FIXATION TIMEPOINTS
-    filter(!is.na(animal_type), animal_type != "fixation")
+    # PHIL HAD SET UP HIS VERSION OF THE ANALYSIS TO EXCLUDE FIXATION AND FOOD TIMEPOINTS
+    # since food never looms and is very different from the animals
+    filter(!is.na(animal_type), !(animal_type %in% c("fixation", "food")))
   
   stopifnot(length(outcome_categories) == 1)
   
-  if (outcome_categories == "object") {
+  if (outcome_categories == "obj") {
     out %<>%
       rename(outcome = animal_type)
-  } else if (outcome_categories == "looming") {
+  } else if (outcome_categories == "loom") {
     out %<>%
       mutate(outcome = if_else(has_loom == 1, "loom", "no.loom"))
-  } else if (outcome_categories == "object_looming") {
+  } else if (outcome_categories == "obj.loom") {
     out %<>%
-      # when classifying the interaction of object and looming, drop food because it never looms
-      # to reduce imbalance
-      filter(animal_type != "food") %>% 
       unite("outcome", animal_type, has_loom, sep = ".")
   }
   

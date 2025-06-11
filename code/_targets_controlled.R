@@ -11,7 +11,8 @@ library(rlang)
 
 # Set target options:
 tar_option_set(
-  packages = c("withr",
+  packages = c("tarchetypes",
+               "withr",
                "matlabr",
                "tidyverse",
                "magrittr",
@@ -27,7 +28,7 @@ tar_option_set(
       log_output = "/home/%u/log/crew_log_%A.out",
       log_error = "/home/%u/log/crew_log_%A.err",
       # single subject level 1s require 32 GB to run more than snail's pace?
-      memory_gigabytes_required = 32,
+      memory_gigabytes_required = 16,
       cpus_per_task = 1,
       time_minutes = 1339,
       partition = "day-long"
@@ -50,11 +51,13 @@ tar_source(c("code/R/utils/",
              "code/R/make-stimlist.R",
              "code/R/call-activations.R",
              "code/R/define-targets-fmri.R",
+             "code/R/parse-qualtrics.R",
              "code/R/parse-events.R",
              "code/R/parse-confounds.R",
              "code/R/parse-bold.R",
              "code/R/call-spm.R",
-             "code/R/call-canlabtools.R"))
+             "code/R/call-canlabtools.R",
+             "code/R/make-plots.R"))
 # Regular source this script because it's not called by a target per se
 # but is necessary for target construction
 # source("code/R/set-study-defaults.R")
@@ -456,20 +459,88 @@ subtargets_fmri_across.subject <- list(
              # yes, use syms() for length 1 also bc syms() returns a list so it will repeat out to tibble length
              meansignal_name = syms("con_meansignal_boxcar"),
              out_path = here::here("ignore", "data", "canlabtools", sprintf("task-controlled_region-sc_con-%s.csv", contrast)))
+  ),
+  tar_eval(
+    tar_target(name = target_name,
+               command = canlabtools_apply_wb_signature(out_path = out_path,
+                                                        betas = beta_name,
+                                                        script = matlab_apply_wb_signature),
+               format = "file"),
+    values = tibble(contrast = contrast_names) %>% 
+      filter(contrast != "meansignal") %>% 
+      mutate(target_name = syms(sprintf("sig.sim.ceko2022_%s", contrast)),
+             beta_name = syms(sprintf("con_%s_boxcar", contrast)),
+             out_path = here::here("ignore", "data", "canlabtools", sprintf("task-controlled_con-%s_sigsim-ceko2022.csv", contrast)))
   )
 )
 
+subtargets_fmri_across.subject_across.contrast <- list(
+  tar_combine(sig.sim.ceko2022,
+              tar_select_targets(subtargets_fmri_across.subject,
+                                 starts_with("sig.sim.ceko2022"))
+  ),
+  tar_target(sig.sim.ceko2022_files,
+             command = sig.sim.ceko2022,
+             format = "file",
+             pattern = map(sig.sim.ceko2022)),
+  tar_target(summary_sim.sig.ceko2022,
+             command = {
+               filename <- sig.sim.ceko2022_files
+               contrast_name <- filename %>% 
+                 basename() %>% 
+                 str_split_i("_", 2) %>% 
+                 str_split_i("-", 2)
+               
+               read_csv(filename) %>% 
+                 pivot_longer(cols = -subj_num, names_to = "signature_type", values_to = "similarity") %>%
+                 mutate(signature_type = str_remove(signature_type, "_bplsF_unthr.nii")) %>% 
+                 group_by(signature_type) %>% 
+                 summarize(across(similarity, summary_stats_default)) %>% 
+                 mutate(contrast = contrast_name)
+               },
+             pattern = map(sig.sim.ceko2022_files))
+)
 ### SPM level 2 group analyses ----
 
 # attention! from here on out it's OUTER targets, which are aggregated ACROSS TASK
 # starting now, it's okay to tar_eval because we are now at the highest level
 targets_fmri_across.subject <- make_targets_fmri_across.subject(targets_fmri_by.subject,
                                                                 contrast_names,
-                                                                additional_targets = subtargets_fmri_across.subject)
+                                                                additional_targets = c(subtargets_fmri_across.subject,
+                                                                                       subtargets_fmri_across.subject_across.contrast))
 
-## targets for in-scanner behavioral data ----
+## targets for behavioral data (in-scanner and otherwise) ----
+
+norms_qualtrics_all.stimuli <- tar_read(norms_qualtrics_all.stimuli, store = here::here("ignore", "_targets", "naturalistic"))
 
 targets_beh <- list(
+  tar_target(norms_qualtrics,
+             command = join_raw_norms_to_stim_labels(norms_qualtrics_all.stimuli,
+                                                     metadata_videos_nback %>% 
+                                                       left_join(read_csv(qualtrics.ids_videos), by = "filename") %>% 
+                                                       select(video_id = filename, qualtrics_id, animal_type, direction, hemifield),
+                                                     loom_col = "direction")
+  ),
+  tar_target(summary_norms_by.looming,
+             command = norms_qualtrics %>% 
+               pivot_longer(cols = starts_with("rating"), names_to = "rating_type", values_to = "rating", names_prefix = "rating_") %>% 
+               # averaging across animal type here
+               group_by(rating_type, direction) %>% 
+               summarize(across(rating, list(mean = mean, sd = sd)), .groups = "drop") %>% 
+               pivot_wider(names_from = direction, values_from = c(rating_mean, rating_sd)) %>% 
+               mutate(diff = rating_mean_looming - rating_mean_receding,
+                      diff_cohens.d = (rating_mean_looming - rating_mean_receding) / sqrt((rating_sd_looming^2 + rating_sd_receding^2)/2))
+  ),
+  tar_target(summary_norms_by.object,
+             command = norms_qualtrics %>% 
+               pivot_longer(cols = starts_with("rating"), names_to = "rating_type", values_to = "rating", names_prefix = "rating_") %>% 
+               mutate(is_spider = if_else(animal_type == "spider", "spider", "other")) %>% 
+               group_by(rating_type, is_spider) %>% 
+               summarize(across(rating, list(mean = mean, sd = sd)), .groups = "drop") %>% 
+               pivot_wider(names_from = is_spider, values_from = c(rating_mean, rating_sd)) %>% 
+               mutate(diff = rating_mean_spider - rating_mean_other,
+                      diff_cohens.d = (rating_mean_spider - rating_mean_other) / sqrt((rating_sd_spider^2 + rating_sd_other^2)/2))
+  ),
   # this target is a single aggregated target across all subjects!!
   tar_combine(name = beh.raw,
               tar_select_targets(targets_fmri_across.subject, starts_with("events.raw"))),
@@ -514,6 +585,11 @@ targets_beh <- list(
 
 ## targets: plots for showing ----
 targets_plots <- list(
+  tar_target(plot_norms,
+             command = norms_qualtrics %>% 
+               relabel_cols_for_plot_controlled() %>% 
+               plot_norm_ratings()
+  )
 )
 
 targets_figs <- list(
@@ -530,7 +606,7 @@ list(
   targets_demos,
   targets_qc,  
   targets_fmri_across.subject,
-  targets_beh
-  # targets_plots,
+  targets_beh,
+  targets_plots
   # targets_figs
 )
