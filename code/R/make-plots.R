@@ -1,24 +1,38 @@
 ## targets-optimized functions for generating plots from data targets ----
 
+relabel_cols_for_plot_naturalistic <- function (data) {
+  data %>% 
+    mutate(loom_col = if_else(has_loom == 1, "Looming", "No looming"),
+           animal_type = fct_relevel(animal_type, "food", "dog", "cat"))
+}
+
+relabel_cols_for_plot_controlled <- function (data) {
+  data %>% 
+    rename(loom_col = direction)
+}
+
+pivot_selfreport_longer <- function (data) {
+  data %>% 
+    pivot_longer(cols = starts_with("rating"), names_to = "construct", values_to = "rating", names_prefix = "rating_") %>% 
+    mutate(construct = if_else(construct == "pleasantness", "valence (- to +)", construct),
+           construct = fct_relevel(construct, "valence (- to +)"))
+}
+
 plot_selfreport_ratings <- function (beh_data) {
   n_subjs <- length(unique(beh_data$subj_num))
   
   preplot <- beh_data %>% 
-    mutate(has_loom = if_else(has_loom == 1, "Looming", "No looming"),
-           animal_type = fct_relevel(animal_type, "food", "dog", "cat")) %>% 
-    pivot_longer(cols = starts_with("rating"), names_to = "construct", values_to = "rating", names_prefix = "rating_") %>% 
-    mutate(construct = if_else(construct == "pleasantness", "valence (- to +)", construct),
-           construct = fct_relevel(construct, "valence (- to +)"))
+    pivot_selfreport_longer()
   
   preplot %>% 
     # so that stuff will be plotted by subject
-    group_by(subj_num, animal_type, has_loom, construct) %>%
-    summarize(rating = mean(rating), .groups = "drop") %>%
-    ggplot(aes(x = animal_type, y = rating, color = has_loom)) +
+    group_by(subj_num, loom_col, animal_type) %>% 
+    summarize(across(starts_with("rating"), mean), .groups = "drop") %>% 
+    ggplot(aes(x = animal_type, y = rating, color = loom_col)) +
     # individual subjects spaghetti
-    geom_line(aes(group = interaction(subj_num, has_loom)), alpha = 0.1) +
+    geom_line(aes(group = interaction(subj_num, loom_col)), alpha = 0.1) +
     # summary lines
-    geom_line(aes(group = has_loom), stat = "summary", fun = "mean") +
+    geom_line(aes(group = loom_col), stat = "summary", fun = "mean") +
     geom_pointrange(stat = "summary", 
                     fun.data = "mean_se") +
     labs(x = "Object type",
@@ -27,6 +41,24 @@ plot_selfreport_ratings <- function (beh_data) {
          subtitle = glue::glue("N = {n_subjs} participants")) +
     facet_wrap(~ construct)
   
+}
+
+plot_norm_ratings <- function (norm_data) {
+  preplot <- norm_data %>% 
+    pivot_selfreport_longer()
+  
+  preplot %>% 
+    ggplot(aes(x = animal_type, y = rating, color = loom_col)) +
+    # points, not individual subjects spaghetti, because we don't know that every norming participant saw every stimulus
+    geom_jitter(alpha = 0.1, width = 0.1) +
+    # summary lines
+    geom_line(aes(group = loom_col), stat = "summary", fun = "mean") +
+    geom_pointrange(stat = "summary", 
+                    fun.data = "mean_se") +
+    labs(x = "Object type",
+         y = "Self-report rating",
+         color = "Motion") +
+    facet_wrap(~ construct)
 }
 
 # takes a long df target of cross-validated encoding predictions, a la pred.encoding.xval_{ROI}
@@ -426,15 +458,15 @@ plot_cormats_encoding_object_selfreport <- function (beta.comparison_flynet,
     labs(x = NULL, y = NULL, fill = "Correlation")
 }
 
-plot_parcel_connectivity <- function (parcels_long,
-                                      fill_col,
-                                      pval_col,
-                                      ggseg_sides,
-                                      ggseg_position = "horizontal",
-                                      positive_only = TRUE,
-                                      max_fill_tval = 5,
-                                      threshold_p_outline = .05,
-                                      viridis_palette = "viridis") {
+plot_parcel_connectivity_ggseg <- function (parcels_long,
+                                            fill_col,
+                                            pval_col,
+                                            ggseg_sides,
+                                            ggseg_position = "horizontal",
+                                            positive_only = TRUE,
+                                            max_fill_tval = 5,
+                                            threshold_p_outline = .05,
+                                            viridis_palette = "viridis") {
   if (positive_only) {
     plot_data <- parcels_long %>% 
       mutate(this_fill_col = pmax({{fill_col}}, 0),
@@ -456,8 +488,55 @@ plot_parcel_connectivity <- function (parcels_long,
     arrange(this_fill_col) %>%
     ggplot() +
     geom_sf(aes(fill = this_fill_col, color = this_outline_col), linewidth = 0.5) +
+    geom_sf_label(aes(label = if_else(this_outline_col, region, NA_character_)), size = 3) +
     this_scale_fill +
     scale_color_manual(values = c("TRUE" = "white", "FALSE" = "black"), na.translate = FALSE) +
     guides(color = "none") +
     labs(fill = "t-value")
+}
+
+plot_parcel_connectivity_ggseg_cat <- function (parcels_long,
+                                                fill_col,
+                                                outline_col,
+                                                ggseg_sides,
+                                                ggseg_position = "horizontal",
+                                                threshold_p_outline = .05) {
+  parcels_long %>% 
+    relabel_glasser_clt2ggseg() %>% 
+    brain_join(ggsegGlasser::glasser) %>% 
+    filter(side %in% ggseg_sides) %>% 
+    reposition_brain(ggseg_position) %>% 
+    arrange({{outline_col}}) %>%
+    ggplot() +
+    geom_sf(aes(fill = {{fill_col}}, color = {{outline_col}}), linewidth = 0.5) +
+    geom_sf_label(aes(label = if_else({{outline_col}}, region, NA_character_)), size = 3) +
+    scale_color_manual(values = c("TRUE" = "white", "FALSE" = "grey40"), na.translate = FALSE) +
+    guides(color = "none") +
+    labs(fill = "which is significant?")
+}
+
+plot_parcel_connectivity_scatter <- function (parcel_values_relabeled,
+                                              color_col = NULL,
+                                              facet_col = NULL) {
+  facet_col <- enquo(facet_col)
+  
+  plot_out <- parcel_values_relabeled %>% 
+    # expects relabel_glasser_clt2ggseg to have been run on the input already
+    # so that parcel data are already filtered by region coming into this
+    unite(col = "label_nice", region, hemi, sep = " ") %>% 
+    ggplot(aes(x = value, y = fct_rev(label_nice), color = {{color_col}})) +
+    geom_vline(xintercept = 0, linetype = "dotted") +
+    geom_jitter(height = 0.1, alpha = 0.1) + 
+    geom_pointrange(stat = "summary", fun.data = "mean_se") +
+    labs(x = "parcel-average connectivity by subject",
+         y = NULL)
+  
+  if (!quo_is_null(facet_col)) {
+    plot_out <- plot_out +
+      facet_grid(rows = vars(!!facet_col),
+                 scales = "free_y",
+                 space = "free_y")
+  }
+  
+  return (plot_out)
 }
