@@ -1,15 +1,40 @@
 ## helper functions for constructing canlabtools matlab calls used by targets ----
 
+canlabtools_apply_wb_signature <- function (out_path,
+                                            betas,
+                                            script = matlab_apply_wb_signature) {
+  matlab_commands <- c(
+    assign_variable("out_path", out_path),
+    # this expects a cell array of chars, one for each subject
+    rvec_to_matlabcell(betas, matname = "paths_nifti"),
+    call_script(script)
+  )
+  
+  out <- run_matlab_target(matlab_commands, out_path, matlab_path)
+  return (out)
+}
+
 canlabtools_parcellate_avg <- function (out_path,
-                                        path_connectivity_allsubs,
+                                        path_connectivity_allsubs_1,
+                                        path_connectivity_allsubs_2 = NULL,
+                                        fun_compare = NULL,
                                         script = matlab_parcellate_avg) {
-  matlab_commands = c(
+  matlab_commands <- c(
     assign_variable("out_path", out_path),
     # expects a path to a single canlabtools fmri_data compatible matrix
     # NOT NIFTIS!!!
-    assign_variable("path_fmri_data", path_connectivity_allsubs),
-    call_script(script)
+    assign_variable("path_fmri_data", path_connectivity_allsubs_1)
   )
+  
+  if (!is.null(path_connectivity_allsubs_2)) {
+    stopifnot(!is.null(fun_compare)) # you must set fun_compare if you specify another matrix file to compare against!!
+    matlab_commands <- c(matlab_commands,
+                         assign_variable("path_fmri_data_2", path_connectivity_allsubs_2),
+                         assign_variable("fun_compare", fun_compare))
+  }
+  
+  matlab_commands <- c(matlab_commands,
+                       call_script(script))
   
   out <- run_matlab_target(matlab_commands, out_path, matlab_path)
   return (out)
@@ -45,11 +70,17 @@ canlabtools_export_statmap <- function (out_path,
                                         values,
                                         threshold_t = NULL,
                                         threshold_p = NULL,
+                                        positive_only = FALSE,
                                         script = matlab_export_statmap) {
   # if both are provided, use threshold_p
   if (!is.null(threshold_p)) {
     values <- threshold_tvals_pre_statmap(values, threshold_p = threshold_p)
-    
+    # positive_only is only considered when threshold_p is used
+    # because threshold_t is already sign-dependent
+    # positive_only uses a 2-tailed t-value but only keeps the positive t-vals
+    if (positive_only) {
+      values[values < 0] <- 0
+    }
   } else if (!is.null(threshold_t)) {
     values <- threshold_tvals_pre_statmap(values, threshold_t = threshold_t)
   }

@@ -123,5 +123,12 @@ targets_scripts <- list(
       here::here("code", "matlab", "parcellate_avg_fmri_data_canlabtools.m")
       },
     format = "file"
+  ),
+  tar_target(
+    name = matlab_apply_wb_signature,
+    command = {
+      here::here("code", "matlab", "apply_wb_signature_canlabtools.m")
+    },
+    format = "file"
   )
 )
