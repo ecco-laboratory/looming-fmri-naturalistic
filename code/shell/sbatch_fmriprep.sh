@@ -8,7 +8,7 @@
 # Outputs ----------------------------------
 #SBATCH -o /home/%u/log/%x-%A-%a.out
 #SBATCH -e /home/%u/log/%x-%A-%a.err
-#SBATCH --mail-user=mthieu@emory.edu
+#SBATCH --mail-user=laberma@emory.edu
 #SBATCH --mail-type=ALL
 # ------------------------------------------
 
@@ -38,13 +38,13 @@ echo Running for subject: $subject
 
 # Compose the command line
 # flags you may or may not want to use:
-# --fs-license-file /fslicensepath/license.txt if you ARE trying to use reconall
+# --fs-license-file /fslicensepath/license.txt #if you ARE trying to use reconall
 # --fs-no-reconall (default would be to run it)
 # flag notes
 # --nprocs is the total number of threads
 # --omp-nthreads is the total number of threads per process
 # I think we don't use the --mem flag because that is capped by the memory requested in the sbatch header?
-cmd="${SINGULARITY_CMD} /data /data/${DERIVS_DIR} participant --participant-label $subject --fs-no-reconall -w /work/ -vv --nprocs 32 --omp-nthreads 8  --output-spaces MNI152NLin2009cAsym:res-2 anat fsaverage5 --verbose --low-mem --me-output-echos"
+cmd="${SINGULARITY_CMD} /data /data/${DERIVS_DIR} participant --participant-label $subject --fs-no-reconall --fs-license-file /fslicensepath/license.txt  -w /work/ -vv --nprocs 32 --omp-nthreads 8  --output-spaces MNI152NLin2009cAsym:res-2 anat fsaverage5 --verbose --low-mem --me-output-echos"
 
 
 # Setup done, run the command
