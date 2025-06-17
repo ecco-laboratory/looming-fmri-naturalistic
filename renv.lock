@@ -41,13 +41,13 @@
     },
     "BiocManager": {
       "Package": "BiocManager",
-      "Version": "1.30.25",
+      "Version": "1.30.26",
       "Source": "Repository",
       "Repository": "CRAN",
       "Requirements": [
         "utils"
       ],
-      "Hash": "3aec5928ca10897d7a0a1205aae64627"
+      "Hash": "2db62ff6044e2c49f466f0cc9a21c149"
     },
     "BiocParallel": {
       "Package": "BiocParallel",
@@ -554,20 +554,6 @@
         "R"
       ],
       "Hash": "61e097f35917d342622f21cdc79c256e"
-    },
-    "colorspace": {
-      "Package": "colorspace",
-      "Version": "2.1-1",
-      "Source": "Repository",
-      "Repository": "CRAN",
-      "Requirements": [
-        "R",
-        "grDevices",
-        "graphics",
-        "methods",
-        "stats"
-      ],
-      "Hash": "d954cb1c57e8d8b756165d7ba18aa55a"
     },
     "conflicted": {
       "Package": "conflicted",
@@ -1895,17 +1881,6 @@
       ],
       "Hash": "4f50122dc256b1b6996a4703fecea821"
     },
-    "munsell": {
-      "Package": "munsell",
-      "Version": "0.5.1",
-      "Source": "Repository",
-      "Repository": "CRAN",
-      "Requirements": [
-        "colorspace",
-        "methods"
-      ],
-      "Hash": "4fd8900853b746af55b81fda99da7695"
-    },
     "nanonext": {
       "Package": "nanonext",
       "Version": "1.5.1",
@@ -2092,7 +2067,7 @@
       "RemoteUsername": "monicathieu",
       "RemoteRepo": "plsmod",
       "RemoteRef": "main",
-      "RemoteSha": "3a0c2b99af041244c0f722e7f24faeaff69a2dd5",
+      "RemoteSha": "e26032a41d39f09d50f5c228e425c002f520d6ed",
       "RemoteHost": "api.github.com",
       "Requirements": [
         "R",
@@ -2107,7 +2082,7 @@
         "tibble",
         "tidyr"
       ],
-      "Hash": "c976c3eec6f84a741b2df05c2afd7e18"
+      "Hash": "1ceddd78db6085019f7a143c1a898e25"
     },
     "plyr": {
       "Package": "plyr",
@@ -2605,7 +2580,7 @@
     },
     "scales": {
       "Package": "scales",
-      "Version": "1.3.0",
+      "Version": "1.4.0",
       "Source": "Repository",
       "Repository": "CRAN",
       "Requirements": [
@@ -2617,11 +2592,10 @@
         "glue",
         "labeling",
         "lifecycle",
-        "munsell",
         "rlang",
         "viridisLite"
       ],
-      "Hash": "c19df082ba346b0ffa6f833e92de34d1"
+      "Hash": "c5bba8f0d1df8c4b9538a40570798d9b"
     },
     "secretbase": {
       "Package": "secretbase",
