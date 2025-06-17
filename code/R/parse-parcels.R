@@ -70,7 +70,8 @@ relabel_glasser_clt2ggseg <- function (parcels_long) {
     # remove = FALSE to keep region (it's useful later!) and then select to drop hemi1, which is lh/rh
     unite(col = "label", hemi1, hemi2, region, sep = "_", remove = FALSE) %>% 
     select(-hemi1) %>% 
-    rename(hemi = hemi2)
+    # because `hemi` in ggseg atlases is "left"/"right", not "L"/"R"
+    rename(hemi_short = hemi2)
     
     
     subcortex_parcels <- parcels_long %>% 

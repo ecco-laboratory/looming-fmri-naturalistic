@@ -163,7 +163,8 @@ read_betas_encoding <- function (path_betas_encoding) {
 
 compare_betas_encoding_category_selfreport <- function (betas_loom,
                                                         betas_object,
-                                                        betas_selfreport,
+                                                        betas_selfreport_flynet,
+                                                        betas_selfreport_alexnet,
                                                         n_bootstraps) {
   # get all sets of betas as tibbles with outcome on the column and voxel on the row
   betas_loom %<>%
@@ -174,14 +175,24 @@ compare_betas_encoding_category_selfreport <- function (betas_loom,
   betas_object %<>%
     as_tibble()
   
-  betas_selfreport %<>% 
+  betas_selfreport <- bind_rows(looming = betas_selfreport_flynet,
+                                object = betas_selfreport_alexnet,
+                                .id = "model_type") %>% 
     unnest_longer(coefs) %>% 
     pivot_wider(names_from = rating_type, values_from = coefs) %>% 
     select(-coefs_id) %>% 
-    rename_with(\(x) paste0("rating_", x), everything()) %>% 
+    rename_with(\(x) paste0("rating_", x), -model_type) %>% 
     # so that the self report betas will all correlate positively with each other
     mutate(rating_unpleasantness = -rating_pleasantness) %>% 
-    select(-rating_pleasantness)
+    select(-rating_pleasantness) %>% 
+    # to disambiguate rows when pivoting wider
+    group_by(model_type) %>% 
+    mutate(row = 1:n()) %>% 
+    ungroup() %>% 
+    # needs to be wide with 1 row per voxel to bind_cols on with everything else
+    # reorder the names for the plot later
+    pivot_wider(names_from = model_type, values_from = starts_with("rating"), names_glue = "{model_type}_{.value}") %>% 
+    select(-row)
 
   boots <- bind_cols(betas_loom, betas_object, betas_selfreport) %>% 
     # not ideal but bootstrap at the order of voxels because bootstrapping earlier 
@@ -238,8 +249,7 @@ calc_perm_pval_object_by_pattern <- function (preds, perms, grouping_cols = NULL
   return (out)
 }
 
-permute_acc_object_by_pattern <- function (preds, n_perms, outcome_categories = c("object", "looming", "object_looming"), acc_grouping_cols = NULL) {
-  stopifnot(length(outcome_categories) == 1)
+permute_acc_object_by_pattern <- function (preds, n_perms, acc_grouping_cols = NULL) {
   acc_grouping_cols <- enquo(acc_grouping_cols)
   
   out <- preds %>% 

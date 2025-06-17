@@ -1,12 +1,12 @@
 ## helper functions for constructing canlabtools matlab calls used by targets ----
 
 canlabtools_apply_wb_signature <- function (out_path,
-                                            betas,
+                                            niftis,
                                             script = matlab_apply_wb_signature) {
   matlab_commands <- c(
     assign_variable("out_path", out_path),
     # this expects a cell array of chars, one for each subject
-    rvec_to_matlabcell(betas, matname = "paths_nifti"),
+    rvec_to_matlabcell(niftis, matname = "paths_nifti"),
     call_script(script)
   )
   

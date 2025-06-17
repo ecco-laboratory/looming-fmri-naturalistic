@@ -26,8 +26,8 @@ plot_selfreport_ratings <- function (beh_data) {
   
   preplot %>% 
     # so that stuff will be plotted by subject
-    group_by(subj_num, loom_col, animal_type) %>% 
-    summarize(across(starts_with("rating"), mean), .groups = "drop") %>% 
+    group_by(construct, subj_num, loom_col, animal_type) %>% 
+    summarize(rating = mean(rating), .groups = "drop") %>% 
     ggplot(aes(x = animal_type, y = rating, color = loom_col)) +
     # individual subjects spaghetti
     geom_line(aes(group = interaction(subj_num, loom_col)), alpha = 0.1) +
@@ -376,12 +376,10 @@ plot_predicted_alexnet_categories <- function (path_alexnet_activations, stim_la
   read_csv(path_alexnet_activations) %>% 
     right_join(stim_labels, 
                by = "video") %>% 
-    select(-frame) %>% 
-    nest(.by = c(video, animal_type, looming), .key = "activations") %>% 
+    nest(.by = c(video, frame, animal_type, looming), .key = "activations") %>% 
     mutate(activations = map(activations, as.matrix)) %>% 
-    mutate(max_indices_from0 = map(activations, \(x) apply(x, 1, which.max) - 1)) %>% 
+    mutate(max_indices_from0 = map_dbl(activations, \(x) apply(x, 1, which.max) - 1)) %>% 
     select(-activations) %>% 
-    unchop(max_indices_from0) %>% 
     left_join(read_csv(path_imagenet_categories), by = c("max_indices_from0" = "index")) %>% 
     group_by(animal_type, looming) %>% 
     mutate(categories_lumped = fct_lump_prop(categories, prop = lump_prop, other_level = "other")) %>% 
@@ -401,6 +399,33 @@ plot_predicted_alexnet_categories <- function (path_alexnet_activations, stim_la
          y = "Top-1 ImageNet superordinate class probability")
 }
 
+plot_predicted_alexnet_categories_framewise <- function (path_alexnet_activations, stim_labels, path_imagenet_categories, lump_prop = .1) {
+  read_csv(path_alexnet_activations) %>% 
+    right_join(stim_labels, 
+               by = "video") %>% 
+    nest(.by = c(video, frame, animal_type, looming), .key = "activations") %>% 
+    mutate(activations = map(activations, as.matrix)) %>% 
+    mutate(max_indices_from0 = map_dbl(activations, \(x) apply(x, 1, which.max) - 1)) %>% 
+    select(-activations) %>% 
+    left_join(read_csv(path_imagenet_categories), by = c("max_indices_from0" = "index")) %>% 
+    group_by(animal_type, looming, frame) %>% 
+    mutate(categories_lumped = fct_lump_prop(categories, prop = lump_prop, other_level = "other")) %>% 
+    count(animal_type, looming, frame, categories_lumped) %>% 
+    arrange(animal_type, looming, frame, desc(categories_lumped)) %>% 
+    mutate(prop = n/sum(n),
+           bar_max = cumsum(prop), 
+           bar_min = coalesce(lag(bar_max), 0), 
+           bar_mid = bar_min + (bar_max-bar_min)/2) %>% 
+    ggplot(aes(x = frame, y = prop, fill = categories_lumped)) + 
+    geom_col() + 
+    geom_text(aes(y = bar_mid, label = categories_lumped)) + 
+    facet_grid(looming ~ animal_type) + 
+    scale_fill_brewer(type = "qual", palette = "Set3") +
+    guides(fill = "none") +
+    labs(x = NULL,
+         y = "Top-1 ImageNet superordinate class probability")
+}
+
 plot_encoding_controlled_flynet <- function (pattern_expressions, y_var, y_label) {
   pattern_expressions %>% 
     ggplot(aes(x = animal_type, y = {{y_var}}, color = direction)) + 
@@ -413,38 +438,28 @@ plot_encoding_controlled_flynet <- function (pattern_expressions, y_var, y_label
          color = "Controlled motion\ndirection")
 }
 
-plot_cormats_encoding_object_selfreport <- function (beta.comparison_flynet,
-                                                     beta.comparison_alexnet,
-                                                     remove_food = TRUE,
-                                                     bottom_only = FALSE) {
+plot_cormats_encoding_object_selfreport <- function (beta.comparison) {
   
-  plot_data <- bind_rows("Looming encoding model" = beta.comparison_flynet,
-            "Object encoding model" = beta.comparison_alexnet,
-            .id = "encoding_type")
-  
-  if (remove_food) {
-    plot_data %<>%
-      filter(row != "outcome_food", col != "outcome_food")
-  }
-  
-  if (bottom_only) {
-    plot_data %<>%
-      filter(starts_with(row, "rating"))
-  }
-  
-  plot_data %>% 
+  beta.comparison %>% 
     mutate(across(c(row, col), 
                   \(x) if_else(x == "outcome_loom",
-                               "looming",
+                               "looming_looming",
                                x) %>% 
-                    str_replace("outcome_", "object: ") %>% 
-                    str_replace("rating_", "self-report: ") %>% 
-                    fct_relevel("looming", 
-                                "object: dog", 
-                                "object: cat", 
-                                "object: frog", 
-                                "object: spider", 
-                                "self-report: unpleasantness")),
+                    str_replace("outcome_", "object_object: ") %>% 
+                    str_remove("rating_") %>% 
+                    # unicode right arrow, for looming -> self-report: etc
+                    str_replace("_", "→") %>% 
+                    fct_relevel("looming→looming", 
+                                "object→object: dog", 
+                                "object→object: cat", 
+                                "object→object: frog", 
+                                "object→object: spider",
+                                "looming→unpleasantness",
+                                "looming→arousal",
+                                "looming→fear",
+                                "object→unpleasantness",
+                                "object→arousal",
+                                "object→fear")),
            ci_excludes_0 = sign(cor_ci95.lower) == sign(cor_ci95.upper)) %>% 
     ggplot(aes(x = col, y = fct_rev(row), fill = cor_true)) + 
     geom_raster() + 
@@ -454,7 +469,6 @@ plot_cormats_encoding_object_selfreport <- function (beta.comparison_flynet,
     scale_fill_gradient2() +
     guides(x = guide_axis(angle = 30),
            color = "none") +
-    facet_wrap(~ encoding_type) +
     labs(x = NULL, y = NULL, fill = "Correlation")
 }
 
@@ -506,29 +520,26 @@ plot_parcel_connectivity_ggseg_cat <- function (parcels_long,
     brain_join(ggsegGlasser::glasser) %>% 
     filter(side %in% ggseg_sides) %>% 
     reposition_brain(ggseg_position) %>% 
-    arrange({{outline_col}}) %>%
+    arrange(desc({{outline_col}})) %>%
     ggplot() +
     geom_sf(aes(fill = {{fill_col}}, color = {{outline_col}}), linewidth = 0.5) +
-    geom_sf_label(aes(label = if_else({{outline_col}}, region, NA_character_)), size = 3) +
-    scale_color_manual(values = c("TRUE" = "white", "FALSE" = "grey40"), na.translate = FALSE) +
+    geom_sf_label(aes(label = if_else({{outline_col}} == "apriori", region, NA_character_)), size = 3) +
     guides(color = "none") +
     labs(fill = "which is significant?")
 }
 
 plot_parcel_connectivity_scatter <- function (parcel_values_relabeled,
+                                              y_col,
                                               color_col = NULL,
                                               facet_col = NULL) {
   facet_col <- enquo(facet_col)
   
   plot_out <- parcel_values_relabeled %>% 
-    # expects relabel_glasser_clt2ggseg to have been run on the input already
-    # so that parcel data are already filtered by region coming into this
-    unite(col = "label_nice", region, hemi, sep = " ") %>% 
-    ggplot(aes(x = value, y = fct_rev(label_nice), color = {{color_col}})) +
+    ggplot(aes(x = value, y = fct_rev({{y_col}}), color = {{color_col}})) +
     geom_vline(xintercept = 0, linetype = "dotted") +
     geom_jitter(height = 0.1, alpha = 0.1) + 
     geom_pointrange(stat = "summary", fun.data = "mean_se") +
-    labs(x = "parcel-average connectivity by subject",
+    labs(x = "region-average connectivity by subject",
          y = NULL)
   
   if (!quo_is_null(facet_col)) {
