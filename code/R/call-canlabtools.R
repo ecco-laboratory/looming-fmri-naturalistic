@@ -1,12 +1,27 @@
 ## helper functions for constructing canlabtools matlab calls used by targets ----
 
 canlabtools_apply_wb_signature <- function (out_path,
-                                            niftis,
+                                            niftis = NULL,
+                                            fmri_data = NULL,
+                                            image_set_name = "multiaversive",
                                             script = matlab_apply_wb_signature) {
-  matlab_commands <- c(
-    assign_variable("out_path", out_path),
+  
+  if (is.null(niftis) & is.null(fmri_data)) {
+    stop("Must specify a path for EITHER niftis OR canlabtools fmri_data compatible tabular data")
+  } else if (!is.null(niftis) & !is.null(fmri_data)) {
+    stop("Paths for niftis AND canlabtools tabular fmri_data have been set. You have to pick one!")
+  } else if (!is.null(niftis) & is.null(fmri_data)) {
     # this expects a cell array of chars, one for each subject
-    rvec_to_matlabcell(niftis, matname = "paths_nifti"),
+    matlab_commands <- rvec_to_matlabcell(niftis, matname = "paths_nifti")
+  } else if (is.null(niftis) & !is.null(fmri_data)) {
+    # fmri_data should always be one table. it just might have multiple rows for multiple subjects
+    matlab_commands <- assign_variable("path_fmri_data", fmri_data)
+  }
+  
+  matlab_commands <- c(
+    matlab_commands,
+    assign_variable("out_path", out_path),
+    assign_variable("image_set_name", image_set_name),
     call_script(script)
   )
   
