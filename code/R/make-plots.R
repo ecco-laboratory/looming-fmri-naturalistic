@@ -232,20 +232,19 @@ plot_confusion_8cat <- function(object_preds, facet_var = NULL) {
   return (plot_out)
 }
 
-plot_encoding_performance <- function (perf_combined, encoding_types = NULL, rois = c("sc", "amyg")) {
+plot_encoding_performance <- function (perf_combined, encoding_types = NULL) {
   n_subjs <- length(unique(perf_combined$fold_num))
   
-  perf <- perf_combined %>% 
-    filter(roi %in% rois)
+  plot_data <- perf_combined
   
   if (!is.null(encoding_types)) {
-    perf %<>%
+    plot_data %<>%
       filter(encoding_type %in% encoding_types) %>% 
       mutate(encoding_type = fct_relevel(encoding_type, !!encoding_types),
              encoding_type = fct_recode(encoding_type, !!!encoding_types),
              encoding_family = encoding_type)
   } else {
-    perf %<>%
+    plot_data %<>%
       mutate(encoding_type = fct_relevel(encoding_type,
                                          "flynet.only",
                                          "flynet.onoff",
@@ -270,7 +269,7 @@ plot_encoding_performance <- function (perf_combined, encoding_types = NULL, roi
                                            "combined"))
   }
   
-  out <- perf %>% 
+  out <- plot_data %>% 
     ggplot(aes(x = encoding_type, y = perf)) +
     geom_hline(yintercept = 0, linetype = "dotted") +
     geom_line(aes(group = fold_num), alpha = 0.2) +
@@ -282,10 +281,6 @@ plot_encoding_performance <- function (perf_combined, encoding_types = NULL, roi
          y = sprintf("Predicted-actual BOLD correlation"),
          color = "Encoding model family",
          subtitle = glue::glue("Leave-one-subject-out cross-validation, N = {n_subjs}"))
-  
-  if (length(rois) > 1) {
-    out <- out + facet_wrap(~ roi, scales = "free_y")
-  }
   
   return (out)
 }

@@ -1,5 +1,5 @@
-cohens.d <- function (vec1, vec0) {
-  (mean(vec1) - mean(vec0)) / sqrt((var(vec1)+var(vec0))/2)
+cohens.d <- function (vec1, vec0, na.rm = FALSE) {
+  (mean(vec1, na.rm = na.rm) - mean(vec0, na.rm = na.rm)) / sqrt((var(vec1, na.rm = na.rm)+var(vec0, na.rm = na.rm))/2)
 }
 
 summary_stats_default <- list(mean = mean,
