@@ -381,35 +381,6 @@ fit_object_by_pattern <- function (path_pattern_allsubs,
   return (out)
 }
 
-get_ratings_by_encoding_time <- function (path_pred_allsubs, events_allsubs) {
-  
-  pred_encoding <- load_encoding_pred_allsubs(path_pred_allsubs)
-  
-  out <- pred_encoding %>% 
-    # ??? SHOULD WE INDEPENDENTLY Z-SCORE EACH OF THE PRED-BOLD COLUMNS BEFORE AVERAGING TOGETHER?
-    mutate(across(starts_with("voxel"), \(x) c(scale(x)))) %>% 
-    pivot_longer(cols = starts_with("voxel"),
-                 names_to = "voxel_num",
-                 values_to = "bold_pred") %>% 
-    group_by(subj_num, tr_num) %>% 
-    summarize(bold_pred_mean = mean(bold_pred), 
-              .groups = "drop") %>% 
-    left_join(events_allsubs, by = c("subj_num", "tr_num")) %>% 
-    filter(!is.na(video_id)) %>% 
-    group_by(subj_num, video_id) %>% 
-    mutate(across(c(starts_with("rating"), animal_type, has_loom), \(x) x[1]),
-           # to count off the TRs within each video endspike
-           tr_num_temp = 1:n()) %>% 
-    ungroup() %>% 
-    select(-tr_num) %>% 
-    # pivot time onto the columns to get however many endspike columns of bold pred per stimulus
-    pivot_wider(names_from = tr_num_temp,
-                values_from = bold_pred_mean,
-                names_prefix = "tr_")
-  
-  return (out)
-}
-
 get_ratings_by_encoding_space <- function (path_pred_allsubs, events_allsubs, path_pred_allsubs_2 = NULL) {
   
   pred_encoding <- load_encoding_pred_allsubs(path_pred_allsubs)
