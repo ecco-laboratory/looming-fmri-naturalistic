@@ -3,7 +3,7 @@
 canlabtools_apply_wb_signature <- function (out_path,
                                             niftis = NULL,
                                             fmri_data = NULL,
-                                            image_set_name = "multiaversive",
+                                            pattern_subdir = "2021_Ceko_MPA2_multiaversive",
                                             script = matlab_apply_wb_signature) {
   
   if (is.null(niftis) & is.null(fmri_data)) {
@@ -21,7 +21,7 @@ canlabtools_apply_wb_signature <- function (out_path,
   matlab_commands <- c(
     matlab_commands,
     assign_variable("out_path", out_path),
-    assign_variable("image_set_name", image_set_name),
+    assign_variable("pattern_subdir", pattern_subdir),
     call_script(script)
   )
   
@@ -281,6 +281,21 @@ canlabtools_mask_fmri_data <- function (out_path,
     rvec_to_matlabcell(bolds, matname = "paths_nifti"),
     rvec_to_matlabcell(confounds, matname = "paths_confounds"),
     rvec_to_matlabcell(roi, matname = "region"),
+    call_script(script)
+  )
+  
+  out <- run_matlab_target(matlab_commands, out_path, matlab_path)
+  return (out)
+}
+
+canlabtools_export_mask_nifti <- function (out_path,
+                                           rois,
+                                           script = matlab_export_mask_nifti) {
+  matlab_commands = c(
+    assign_variable("out_path", out_path),
+    # can be a list of char vectors to convert to a matlab nested char array
+    # which will bundle rois together into a single blob within-nest
+    rvec_to_matlabcell(rois, matname = "rois"),
     call_script(script)
   )
   

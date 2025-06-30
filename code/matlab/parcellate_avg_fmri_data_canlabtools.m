@@ -37,7 +37,7 @@ data.dat = wb_data';
 
 % for a whole-brain-esque analysis, ROIs are now hard-set in this script!
 % atm, go through all glasser parcels plus amygdala, superior colliculus, and thalamus pulvinar & LGN
-% TODO: annoyingly, the canlab2018 atlas doesn't breakdown amygdala by hemisphere. 
+% note: the canlab2018 atlas doesn't breakdown amygdala by hemisphere. 
 % only by nuclei but each nucleus ROI has both hemispheres?
 % newer canlab atlases do break it up by hemisphere but no longer by nucleus (prob fine)
 % however, I can't figure out how to get canlab2023 to work with our existing download of Bianciardi Brainstem Navigator

@@ -1,7 +1,8 @@
 %% load libraries
 addpath('/home/data/eccolab/Code/GitHub/spm12'); % per spm docs, do not genpath it
 addpath(genpath('/home/data/eccolab/Code/GitHub/CanlabCore'));
-addpath(genpath('/home/data/eccolab/Code/GitHub/Neuroimaging_Pattern_Masks'));
+pattern_mask_dir = '/home/data/eccolab/Code/GitHub/Neuroimaging_Pattern_Masks'; % store in var bc called later
+addpath(genpath(pattern_mask_dir));
 
 %% VARIABLES THAT MUST BE DEFINED BEFORE THE SCRIPT IS SOURCED
 % THIS SCRIPT IS DESIGNED TO RUN ACROSS A SINGLE TASK
@@ -14,8 +15,8 @@ addpath(genpath('/home/data/eccolab/Code/GitHub/Neuroimaging_Pattern_Masks'));
 % path_fmri_data: path to CSV input file with subjects (or whatever) on the rows and fmri_data whole brain voxel on the columns
 % must have come from canlabtools cause it's going back into canlabtools
 % DO NOT SET paths_nifti AND path_fmri_data AT THE SAME TIME. USE ONLY ONE!!! the calling script at least will error out if you set both
-% image_set_name: char keyword for a set of signatures known to canlabtools load_image_set(). 
-% the calling script currently defaults this to 'multiaversive' for Ceko 2022
+% pattern_subdir: char folder name for the subfolder of Neuroimaging_Pattern_Masks/Multivariate_signature_patterns pertaining to the relevant set of signatures 
+% the calling script currently defaults this to the folder for Ceko 2022
 % out_path: for the table of cosine similarities with each signature (col) by subject (row). one char array for one output file.
 
 %% LOAD NIFTIS AS CANLABTOOLS FMRI_DATA, OR POP TABULAR DATA INTO FMRI_DATA OBJECT
@@ -29,8 +30,21 @@ elseif exist('path_fmri_data', 'var') == 1
 end
 
 %% LOAD CANLABTOOLS WHOLE BRAIN SIGNATURE SET
-% this is hard-coded under the hood to pull from wherever Neuroimaging_Pattern_Masks lives
-wb_signature = load_image_set(image_set_name);
+% now constructs the paths straight from whatever's in the signatures subfolder of Neuroimaging_Pattern_Masks
+% bc it appears that not all of them have aliases hard-coded into load_image_set()
+signature_dir = fullfile(pattern_mask_dir, 'Multivariate_signature_patterns', pattern_subdir);
+% assumes every nifti in the signature dir is of interest
+signature_files_nii = dir(fullfile(signature_dir, '*.nii'));
+% some of the older ones are in analyze format :o
+signature_files_img = dir(fullfile(signature_dir, '*.img'));
+% col-concatenate whatever you get together into one long struct array of files
+signature_files = [signature_files_nii; signature_files_img];
+signature_paths = cell(1, length(signature_files));
+for i=1:length(signature_files)
+    signature_paths{i} = fullfile(signature_dir, signature_files(i).name);
+end
+
+wb_signature = fmri_data(signature_paths);
 
 %% APPLY WHOLE BRAIN SIGNATURE TO NIFTIS IN QUESTION
 % this returns a matrix of subjects (niftis) on the rows x signature file on the col

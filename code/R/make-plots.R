@@ -534,7 +534,7 @@ plot_parcel_connectivity_scatter <- function (parcel_values_relabeled,
     geom_vline(xintercept = 0, linetype = "dotted") +
     geom_jitter(height = 0.1, alpha = 0.1) + 
     geom_pointrange(stat = "summary", fun.data = "mean_se") +
-    labs(x = "region-average connectivity by subject",
+    labs(x = "Mean connectivity (Pearson's _r_)",
          y = NULL)
   
   if (!quo_is_null(facet_col)) {
@@ -545,4 +545,16 @@ plot_parcel_connectivity_scatter <- function (parcel_values_relabeled,
   }
   
   return (plot_out)
+}
+
+plot_sig_sim <- function (sig_sim) {
+  sig_sim %>% 
+    pivot_longer(cols = -c(model_type, fold_num), names_to = "signature", values_to = "similarity") %>% 
+    ggplot(aes(x = similarity, y = fct_reorder(signature, similarity, .fun = mean), color = model_type)) + 
+    geom_vline(xintercept = 0, linetype = "dotted") + 
+    geom_jitter(height = 0.1, alpha = 0.1) + 
+    geom_pointrange(stat = "summary", fun.data = "mean_se") +
+    labs(x = "Pattern expression (cosine similarity)",
+         y = "Validated whole-brain signature",
+         color = "Connectivity type")
 }

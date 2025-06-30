@@ -130,5 +130,13 @@ targets_scripts <- list(
       here::here("code", "matlab", "apply_wb_signature_canlabtools.m")
     },
     format = "file"
+  ),
+  tar_target(
+    name = matlab_export_mask_nifti,
+    command = {
+      matlab_select_atlas_subset
+      here::here("code", "matlab", "export_mask_nifti_canlabtools.m")
+    },
+    format = "file"
   )
 )
