@@ -405,9 +405,9 @@ targets_qc <- list(
 # It must be edited MANUALLY to label subjects as group "use" once their fmriqc has been checked and approved
 # that way, only subjects manually approved will be included in these analyses
 participants <- inject(here::here(!!!path_here_fmri, "participants.tsv")) %>% 
-  read_tsv() %>% 
-  # 2025-05-13: Temporarily hard filter out anyone who didn't complete all 5 runs
-  filter(group == "use", participant_id != "sub-0039") %>% 
+  read_tsv(comment = "#") %>% 
+  # 2025-05-13: Anyone who didn't do all 5 runs should be marked as unusable for controlled
+  filter(group %in% c("use_both", "use_controlled")) %>% 
   select(subject = participant_id)
 
 # attention! this is the innermost tar_map, which defines RUN-UNIQUE targets
@@ -463,7 +463,7 @@ subtargets_fmri_across.subject <- list(
   tar_eval(
     tar_target(name = target_name,
                command = canlabtools_apply_wb_signature(out_path = out_path,
-                                                        betas = beta_name,
+                                                        niftis = beta_name,
                                                         script = matlab_apply_wb_signature),
                format = "file"),
     values = tibble(contrast = contrast_names) %>% 
