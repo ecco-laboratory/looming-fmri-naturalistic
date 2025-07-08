@@ -61,34 +61,32 @@ plot_norm_ratings <- function (norm_data) {
     facet_wrap(~ construct)
 }
 
-# takes a long df target of cross-validated encoding predictions, a la pred.encoding.xval_{ROI}
-plot_sample_timecourse_encoding <- function (pred_encoding_xval, encoding_models = NULL, subj = 1) {
+# takes a named list of targets of cross-validated encoding predictions, a la pred.encoding.xval_{ROI}
+# the list names will become the facet labels!
+plot_sample_timecourse_encoding <- function (list_paths_pred_encoding, subj = 1) {
   # only 1 subject at a time!
   stopifnot(length(subj) == 1)
   
-  preplot <- pred_encoding_xval %>% 
-    select(encoding_type, subj_num, everything()) %>% 
+  encoding_names <- names(list_paths_pred_encoding)
+  
+  preplot <- list_paths_pred_encoding %>% 
+    map(\(x) read_csv(x, col_names = FALSE)) %>% 
+    bind_rows(.id = "encoding_type") %>% 
+    select(encoding_type, subj_num = X1, everything()) %>% 
     # just do it for subject 1 by default because this is for a schematic
     # but set it as an arg so you COULD set it later if you needed to
-    filter(subj_num == subj)
-  
-  if (!is.null(encoding_models)) {
-    encoding_names <- names(encoding_models)
-    preplot %<>%
-      filter(encoding_type %in% encoding_models) %>% 
-      # to relabel and reorder them into the names and level order specified by the argument. for plot facet order
-      mutate(encoding_type = fct_recode(encoding_type, !!!encoding_models),
-             encoding_type = fct_relevel(encoding_type, !!encoding_names))
-  }
+    filter(subj_num == subj) %>% 
+    # to relabel and reorder them into the names and level order specified by the argument. for plot facet order
+    mutate(encoding_type = fct_relevel(encoding_type, !!encoding_names))
   
   preplot %<>%
     group_by(encoding_type) %>% 
     mutate(tr_num = 1:n()) %>% 
     ungroup() %>% 
-    pivot_longer(cols = starts_with("voxel"), 
+    pivot_longer(cols = starts_with("X"), 
                  names_to = "voxel_num", 
                  values_to = "bold_pred", 
-                 names_transform = list(voxel_num = \(x) as.integer(str_split_i(x, "\\.", 2L)) - 1L)) %>%
+                 names_transform = list(voxel_num = \(x) as.integer(str_sub(x, start = 2L)) - 1L)) %>%
     # just to cut down on what's getting drawn on the plot
     filter(voxel_num %% 5 == 0) %>% 
     ggplot(aes(x = tr_num, y = bold_pred, color = voxel_num)) + 
@@ -162,6 +160,8 @@ plot_confusion <- function(object_preds, facet_var_row = NULL, facet_var_col = N
   
   plot_data <- object_preds %>% 
     count(!!!facet_vars, .obs, .pred) %>% 
+    # bc complete uses all implicit factor levels, which may re-input intentionally empty categories like food
+    mutate(across(c(.obs, .pred), fct_drop)) %>%
     complete(!!!facet_vars, .obs, .pred, fill = list(n = 0)) %>%
     group_by(pick(!!!facet_vars, .obs)) %>% 
     mutate(prob = n/sum(n)) %>% 
@@ -232,6 +232,19 @@ plot_confusion_8cat <- function(object_preds, facet_var = NULL) {
   return (plot_out)
 }
 
+
+# since we now have to do enough of these that I may as well standardize the appearance
+plot_spaghetti_by_model <- function (data, model_col, y_col, subj_col, color_col = NULL, spaghetti_alpha = 0.2) {
+  if (is.null(color_col)) color_col <- enquo(model_col)
+ data %>% 
+    ggplot(aes(x = {{model_col}}, y = {{y_col}})) +
+    geom_hline(yintercept = 0, linetype = "dotted") +
+    geom_line(aes(group = {{subj_col}}), alpha = spaghetti_alpha) +
+    geom_line(aes(group = 1), stat = "summary", fun = "mean") +
+    geom_point(aes(color = {{color_col}}), size = 3, alpha = spaghetti_alpha) +
+    geom_pointrange(aes(color = {{color_col}}), size = 0.75, stat = "summary", fun.data = \(x) mean_se(x, mult = 1))
+}
+
 plot_encoding_performance <- function (perf_combined, encoding_types = NULL) {
   n_subjs <- length(unique(perf_combined$fold_num))
   
@@ -270,12 +283,10 @@ plot_encoding_performance <- function (perf_combined, encoding_types = NULL) {
   }
   
   out <- plot_data %>% 
-    ggplot(aes(x = encoding_type, y = perf)) +
-    geom_hline(yintercept = 0, linetype = "dotted") +
-    geom_line(aes(group = fold_num), alpha = 0.2) +
-    geom_line(aes(group = 1), stat = "summary", fun = "mean") +
-    geom_point(aes(color = encoding_family), size = 3, alpha = 0.2) +
-    geom_pointrange(aes(color = encoding_family), size = 0.75, stat = "summary", fun.data = \(x) mean_se(x, mult = 1)) +
+    plot_spaghetti_by_model(model_col = encoding_type,
+                            y_col = perf,
+                            subj_col = fold_num,
+                            color_col = encoding_family) +
     guides(x = guide_axis(angle = 30)) +
     labs(x = "which encoding model?",
          y = sprintf("Predicted-actual BOLD correlation"),
@@ -345,26 +356,54 @@ plot_encoding_object_acc_by_object <- function (acc_summary, y_description, enco
     facet_wrap(~ encoding_type)
 }
 
-plot_encoding_selfreport_pcor <- function (summary_pcor) {
-  summary_pcor %>% 
-    mutate(vjust_label = case_match(term, 
-                                    "scale(flynet)" ~ 0, 
-                                    "scale(alexnet)" ~ 1),
-           term = fct_recode(term, 
-                             "looming" = "scale(flynet)", 
-                             "object" = "scale(alexnet)"),
+# this one works on the regular correlation summary OR the pcor summary! but not both together, that requires more processing
+plot_encoding_selfreport <- function (summary_encoding_selfreport, cor_col_prefix = "pcor", xlab = "Partial ρ ± 95% CI") {
+  summary_encoding_selfreport %>% 
+    rename_with(\(x) str_replace(x, cor_col_prefix, "cor"), starts_with(cor_col_prefix)) %>% 
+    mutate(vjust_label = case_match(model_type, 
+                                    "flynet" ~ 0, 
+                                    "alexnet" ~ 1),
+           model_type = fct_recode(model_type, 
+                             "looming" = "flynet", 
+                             "object" = "alexnet"),
            rating_type = fct_recode(rating_type, "valence" = "pleasantness"),
            rating_type = fct_relevel(rating_type, "valence")) %>% 
-    ggplot(aes(x = pcor_mean, y = fct_rev(rating_type), color = term)) + 
+    ggplot(aes(x = cor_mean, y = fct_rev(rating_type), color = model_type)) + 
     geom_vline(xintercept = 0, linetype = "dotted") + 
-    geom_pointrange(aes(xmin = pcor_ci95.lower, xmax = pcor_ci95.upper), 
+    geom_pointrange(aes(xmin = cor_ci95.lower, xmax = cor_ci95.upper), 
                     position = position_dodge(width = 0.1)) + 
-    geom_text(aes(label = term, vjust = vjust_label), 
+    geom_text(aes(label = model_type, vjust = vjust_label), 
               position = position_dodge(width = rel(0.4)),
               size = rel(5)) + 
     guides(color = "none") + 
-    labs(x = sprintf("Partial \U03C1 \U00B1 95%% CI"), 
+    labs(x = xlab, 
          y = NULL)
+}
+
+plot_encoding_selfreport_combined <- function (summary_encoding_selfreport_cor,
+                                               summary_encoding_selfreport_pcor) {
+  # rcor for "regular correlation". dumb but I just don't want to risk overloading cor() in the namespace
+  # harmonize the colnames before row-binding
+  bind_rows("full" = summary_encoding_selfreport_cor %>% 
+              rename_with(\(x) str_replace(x, "correlation", "cor"), everything()),
+            "partial" = summary_encoding_selfreport_pcor %>% 
+              rename_with(\(x) str_replace(x, "pcor", "cor"), everything()),
+            .id = "cor_type") %>% 
+    mutate(model_type = fct_recode(model_type, 
+                                   "looming" = "flynet", 
+                                   "object" = "alexnet"),
+           rating_type = fct_recode(rating_type, "valence" = "pleasantness"),
+           rating_type = fct_relevel(rating_type, "valence")) %>% 
+    ggplot(aes(x = cor_type, y = cor_mean, color = model_type, fill = model_type)) + 
+    geom_hline(yintercept = 0, linetype = "dotted") + 
+    geom_ribbon(aes(ymin = cor_ci95.lower, ymax = cor_ci95.upper, group = model_type), alpha = 0.4, linewidth = 0) +
+    geom_line(aes(group = model_type)) +
+    geom_point(size = 3) + 
+    labs(x = "correlation type", 
+         y = "correlation ± 95% CI",
+         color = "Feature type",
+         fill = "Feature type") +
+    facet_wrap(~ rating_type)
 }
 
 plot_predicted_alexnet_categories <- function (path_alexnet_activations, stim_labels, path_imagenet_categories, lump_prop = .1) {
@@ -524,37 +563,26 @@ plot_parcel_connectivity_ggseg_cat <- function (parcels_long,
 }
 
 plot_parcel_connectivity_scatter <- function (parcel_values_relabeled,
-                                              y_col,
-                                              color_col = NULL,
-                                              facet_col = NULL) {
+                                              facet_col) {
   facet_col <- enquo(facet_col)
   
   plot_out <- parcel_values_relabeled %>% 
-    ggplot(aes(x = value, y = fct_rev({{y_col}}), color = {{color_col}})) +
-    geom_vline(xintercept = 0, linetype = "dotted") +
-    geom_jitter(height = 0.1, alpha = 0.1) + 
-    geom_pointrange(stat = "summary", fun.data = "mean_se") +
-    labs(x = "Mean connectivity (Pearson's _r_)",
-         y = NULL)
-  
-  if (!quo_is_null(facet_col)) {
-    plot_out <- plot_out +
-      facet_grid(rows = vars(!!facet_col),
-                 scales = "free_y",
-                 space = "free_y")
-  }
-  
+    plot_spaghetti_by_model(model_col = model_type, y_col = value, subj_col = fold_num, spaghetti_alpha = 0.1) +
+    facet_wrap(facets = vars(!!facet_col), nrow = 2, strip.position = "left") +
+    guides(color = "none", x = guide_axis(angle = 30)) +
+    labs(x = "Connectivity type",
+         y = "Mean connectivity (Pearson's _r_)")
+
   return (plot_out)
 }
 
 plot_sig_sim <- function (sig_sim) {
   sig_sim %>% 
     pivot_longer(cols = -c(model_type, fold_num), names_to = "signature", values_to = "similarity") %>% 
-    ggplot(aes(x = similarity, y = fct_reorder(signature, similarity, .fun = mean), color = model_type)) + 
-    geom_vline(xintercept = 0, linetype = "dotted") + 
-    geom_jitter(height = 0.1, alpha = 0.1) + 
-    geom_pointrange(stat = "summary", fun.data = "mean_se") +
-    labs(x = "Pattern expression (cosine similarity)",
-         y = "Validated whole-brain signature",
-         color = "Connectivity type")
+    mutate(signature = fct_rev(fct_reorder(signature, similarity, .fun = mean, .na_rm = TRUE))) %>% 
+    plot_spaghetti_by_model(model_col = model_type, y_col = similarity, subj_col = fold_num, spaghetti_alpha = 0.1) +
+    facet_wrap(facets = vars(signature), nrow = 3, strip.position = "left") +
+    guides(color = "none", x = guide_axis(angle = 30)) +
+    labs(x = "Connectivity type",
+         y = "Pattern expression (cosine similarity)")
 }

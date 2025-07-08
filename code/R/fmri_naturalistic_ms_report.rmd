@@ -23,8 +23,8 @@ TODO: N, sex, gender, age
 
 ```{r}
 participants <- inject(here::here(!!!path_here_fmri, "participants.tsv")) %>% 
-  read_tsv() %>% 
-  filter(group == "use") %>% 
+  read_tsv(comment = "#") %>% 
+  filter(group %in% c("use_both", "use_naturalistic")) %>% 
   rename(subject = participant_id, gender = sex)
 ```
 
@@ -37,6 +37,22 @@ participants %>%
 
 age, mean = `r round(mean(participants$age), 0)`, SD = `r round(sd(participants$age), 0)`
 
+## Methods schematic subplots (in Figure 1)
+
+### Figure 1e
+
+```{r figure-1e-1}
+knitr::include_graphics(tar_read(fig_ms_schematic_unit.activation, store = target_store), rel_path = FALSE)
+```
+
+```{r figure-1e-2}
+knitr::include_graphics(tar_read(fig_ms_schematic_encoding.bold.pred, store = target_store), rel_path = FALSE)
+```
+
+```{r figure-1e-3}
+knitr::include_graphics(tar_read(fig_ms_schematic_bold, store = target_store), rel_path = FALSE)
+```
+
 ## Straight up encoding model performance, cross-validated
 
 ```{r}
@@ -45,19 +61,13 @@ summary_perf.encoding <- tar_read(summary_perf.encoding, store = target_store) %
   select(encoding_type, starts_with("r_")) %>% 
   mutate(encoding_type = str_remove(encoding_type, ".only"))
 
-summary_pcor.encoding <- tar_read(summary_pcor.encoding_flynet.alexnet, store = target_store) %>% 
-  rename(encoding_type = term)
+summary_pcor.encoding <- tar_read(summary_pcor.encoding_flynet.alexnet, store = target_store)
 ```
 
 ```{r}
 summary_perf.encoding %>% 
   left_join(summary_pcor.encoding, by = "encoding_type") %>% 
   select(-starts_with("r2")) %>% 
-  mutate(pct_independent = (pcor_mean / r_mean) * 100) %>% 
-  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
-```
-```{r}
-tar_read(summary_perf.encoding_alexnet.minus.flynet, store = target_store) %>% 
   mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
 ```
 
@@ -71,12 +81,6 @@ knitr::include_graphics(tar_read(fig_ms_encoding.perf_flynet.alexnet, store = ta
 
 ```{r}
 tar_read(summary_encoding.discrim.looming, store = target_store) %>% 
-  mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
-```
-
-```{r}
-tar_read(summary_encoding.discrim.looming_by.category, store = target_store) %>% 
-  filter(.metric %in% c("accuracy", "roc_auc")) %>% 
   mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
 ```
 
@@ -111,6 +115,7 @@ knitr::include_graphics(tar_read(fig_ms_encoding.confusion.object_alexnet, store
 
 ```{r}
 tar_read(summary_auroc.cross_encoding.discrim.looming, store = target_store) %>% 
+  summarize(.estimate_real = mean(.estimate_real)) %>% 
   mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
 ```
 
@@ -190,7 +195,7 @@ tar_read(summary_pattern.activation.controlled_by.object_flynet, store = target_
 
 ```{r}
 tar_read(pattern.discrim.controlled_alexnet, store = target_store) %>% 
-  metrics(truth = animal_type, estimate = animal_type_pred, starts_with("outcome")) %>% 
+  yardstick::metrics(truth = animal_type, estimate = animal_type_pred, starts_with("outcome")) %>% 
   mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
 ```
 
@@ -207,25 +212,22 @@ knitr::include_graphics(tar_read(fig_ms_pattern.activation.controlled_flynet, st
 targets_statmap <- tar_read(fig_ms_statmaps_pre.mricrogl, store = target_store)
 ```
 
+### Figure 3c
+
+```{r figure-3c}
+knitr::include_graphics(tar_read(fig_ms_conn_scatter, store = target_store), rel_path = FALSE)
+```
+
+
 ```{r}
 tar_read(summary_wb.connectivity_sig.sim, store = target_store) %>% 
   mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
 ```
 
-### Figure 3b components
+### Figure 3d
 
-```{r figure-3b-1}
-knitr::include_graphics(tar_read(fig_ms.supp_ggseg.conn_conj.diff_lat.med, store = target_store), rel_path = FALSE)
-```
-
-```{r figure-3b-2}
-knitr::include_graphics(tar_read(fig_ms.supp_ggseg.conn_conj.diff_dors.vent, store = target_store), rel_path = FALSE)
-```
-
-### Figure 3c
-
-```{r figure-3c}
-knitr::include_graphics(tar_read(fig_ms_conn_scatter, store = target_store), rel_path = FALSE)
+```{r figure-3d}
+knitr::include_graphics(tar_read(fig_ms_conn_sig.sim, store = target_store), rel_path = FALSE)
 ```
 
 ## Self report
@@ -237,6 +239,8 @@ knitr::include_graphics(tar_read(fig_ms_ratings, store = target_store), rel_path
 ```
 
 ### ANOVA self report by stimulus labels
+
+Supplement, I think?
 
 ```{r}
 tar_read(anova_beh_pleasantness, store = target_store) %>% 
@@ -259,37 +263,44 @@ tar_read(anova_beh_fear, store = target_store) %>%
          across(c(statistic, p.value), \(x) signif(x, digits = 3)))
 ```
 
+### full & partial correlations of encoding patterns predicting self-report
+
 ### partial correlations of encoding patterns predicting self-report
 
 ```{r}
-summary_encoding.selfreport_pcor <- tar_read(summary_encoding.selfreport_pcor, store = target_store) %>% 
+summary_encoding.selfreport_combined <- tar_read(summary_encoding.selfreport, store = target_store) %>% 
+  full_join(tar_read(summary_encoding.selfreport_pcor, store = target_store),
+            by = c("data_subset", "rating_type", "model_type")) %>% 
+  # drop the bootstrap distribution SDs (aka bootstrapped SEs) bc keeping the 95% CIs which are from the same distribution anyway
+  select(-ends_with("sd")) %>% 
   mutate(across(where(is.numeric), \(x) signif(x, digits = 3)))
 ```
 
 ```{r}
-summary_encoding.selfreport_pcor %>% 
-  filter(data_subset == "overall") %>%
-  arrange(term) %>% 
+summary_encoding.selfreport_combined %>% 
+  filter(data_subset == "animal") %>%
+  arrange(model_type) %>% 
   select(-data_subset)
 ```
 
 ### Figure 4b
 
-```{r figure-4b}
+Option 1, new as of 2025-06-30
+
+```{r figure-4b-option-1}
+knitr::include_graphics(tar_read(fig_ms_encoding.selfreport.combined, store = target_store), rel_path = FALSE)
+```
+
+Option 2, a figure of this form was on the SANS 2025 poster
+
+```{r figure-4b-option-2}
 knitr::include_graphics(tar_read(fig_ms_encoding.selfreport.pcor, store = target_store), rel_path = FALSE)
 ```
 
 ```{r}
-summary_encoding.selfreport_pcor %>% 
-  filter(data_subset == "food") %>% 
+summary_encoding.selfreport_combined %>% 
+  filter(data_subset == "food") %>%
+  arrange(model_type) %>% 
   select(-data_subset)
-```
-
-## correlations between encoding representation components that predict veridical looming, object, and self report
-
-### Figure 4c
-
-```{r figure-4c}
-knitr::include_graphics(tar_read(fig_ms_beta.comparison_object.selfreport, store = target_store), rel_path = FALSE)
 ```
 

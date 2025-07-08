@@ -6,8 +6,7 @@ make_recipe <- function (in_data, x_prefix, y_prefix, additional_steps = NULL) {
   in_recipe <- recipe(in_data) %>% 
     update_role(starts_with(x_prefix), new_role = "predictor") %>% 
     update_role(starts_with(y_prefix), new_role = "outcome") %>% 
-    update_role(subj_num, new_role = "ID") # %>% 
-    # step_normalize(all_outcomes(), skip = TRUE)
+    update_role(subj_num, new_role = "ID")
   
   if (!is.null(additional_steps)) {
     in_recipe %<>%
@@ -77,8 +76,8 @@ get_preds_one_fold <- function (model, data_or_split, x_prefix, y_prefix, rm_x, 
   return (preds)
 }
 
-tidy_plsda_preds <- function (preds) {
-  preds %>% 
+tidy_plsda_preds <- function (preds, apply_softmax = FALSE) {
+  out <- preds %>% 
     rename(.obs = .obs_outcome) %>% 
     # at this point, .obs is just the original categorical column but .pred has one columns for each one-hot outcome level
     # bundle .obs and .pred together to make it easier to extract the max for each one as the class label
@@ -86,17 +85,24 @@ tidy_plsda_preds <- function (preds) {
     mutate(.preds = map(.preds, \(y) unlist(y)),
            # keep both the numeric PLS-DA "class predictions" and the label for the max class prediction
            # the former for ROC curves and the latter for straight-up accuracy
-           .pred = map_chr(.preds, \(y) names(which.max(y))), 
-           # once the max class prediction has been pulled,
-           # keep only the first class prob value for 2-class scenarios
-           # because tidymodels only takes one class prob for 2-class auc
-           .preds = map(.preds, \(y) if (length(y) == 2) return (y[1]) else return (y)),
-           # clean up class labels that were pulled from predictor col names
-           .pred = str_split_i(.pred, "_", 3),
-           # and finally push everything back to factor for tidymodels accuracy etc
-           .obs = factor(.obs),
-           # patch all categories back in in case one is never predicted
-           .pred = factor(.pred, levels = levels(.obs)))
+           .pred = map_chr(.preds, \(y) names(which.max(y))))
+  
+  if (apply_softmax) {
+    out %<>%
+      mutate(.preds = map(.preds, \(y) softmax(y)))
+  }
+  
+  out %<>%
+    mutate(# once the max class prediction has been pulled,
+      # keep only the first class prob value for 2-class scenarios
+      # because tidymodels only takes one class prob for 2-class auc
+      .preds = map(.preds, \(y) if (length(y) == 2) return (y[1]) else return (y)),
+      # clean up class labels that were pulled from predictor col names
+      .pred = str_split_i(.pred, "_", 3),
+      # and finally push everything back to factor for tidymodels accuracy etc
+      .obs = factor(.obs),
+      # patch all categories back in in case one is never predicted
+      .pred = factor(.pred, levels = levels(.obs)))
 }
 
 fit_model_xval <- function (in_data, 
@@ -144,6 +150,7 @@ fit_model_2level <- function (in_data,
                               nest_vars,
                               x_prefix, 
                               y_var,
+                              additional_recipe_steps = NULL,
                               parsnip_model,
                               n_folds_within_nest = 2,
                               rm_x = FALSE) {
@@ -155,6 +162,11 @@ fit_model_2level <- function (in_data,
     recipe() %>% 
     update_role(starts_with(x_prefix), new_role = "predictor") %>% 
     update_role(all_of(y_var), new_role = "outcome")
+  
+  if (!is.null(additional_recipe_steps)) {
+    this_recipe %<>%
+      additional_recipe_steps()
+  }
   
   this_workflow <- workflow() %>% 
     add_model(parsnip_model) %>% 

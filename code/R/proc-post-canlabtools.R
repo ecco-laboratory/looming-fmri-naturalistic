@@ -225,6 +225,32 @@ compare_betas_encoding_category_selfreport <- function (betas_loom,
   return (out)
 }
 
+preproc_auroc_loom_from_obj <- function (unnested_decoding_preds) {
+  out <- unnested_decoding_preds %>% 
+    unnest_longer(.preds, values_to = ".pred_animal", indices_to = "animal_to_use") %>% 
+    mutate(has_loom = fct_recode(as.character(has_loom), "yes" = "1", "no" = "0"), 
+           has_loom = fct_relevel(has_loom, "yes"))
+  
+  return (out)
+}
+
+preproc_auroc_obj_from_loom <- function (unnested_decoding_preds) {
+  out <- unnested_decoding_preds %>% 
+    unnest_wider(.preds) %>% 
+    mutate(is_dog = if_else(animal_type == "dog", "yes", "no"), 
+           is_cat = if_else(animal_type == "cat", "yes", "no"), 
+           is_frog = if_else(animal_type == "frog", "yes", "no"), 
+           is_spider = if_else(animal_type == "spider", "yes", "no")) %>% 
+    pivot_longer(cols = starts_with("is_"), 
+                 names_to = "animal_to_guess", 
+                 values_to = "animal_value", 
+                 names_prefix = "is_") %>% 
+    mutate(animal_value = factor(animal_value, levels = c("yes", "no"))) %>% 
+    group_by(animal_to_guess)
+  
+  return (out)
+}
+
 calc_perm_pval_object_by_pattern <- function (preds, perms, grouping_cols = NULL) {
   
   grouping_cols <- enquo(grouping_cols)
@@ -326,21 +352,31 @@ fit_object_by_pattern <- function (path_pattern_allsubs,
     left_join(events_allsubs, by = c("subj_num", "tr_num")) %>% 
     # reconstruct run number here for later block permutation by run
     mutate(run_num = (tr_num-1) %/% n_trs_kept_per_run) %>% 
-    # PHIL HAD SET UP HIS VERSION OF THE ANALYSIS TO EXCLUDE FIXATION AND FOOD TIMEPOINTS
-    # since food never looms and is very different from the animals
-    filter(!is.na(animal_type), !(animal_type %in% c("fixation", "food")))
+    # ALWAYS EXCLUDE FIXATION FROM TRAINING AND TESTING
+    # food is ALSO excluded from training but implemented lower down using recipes to exclude it from training only
+    filter(!is.na(animal_type), animal_type != "fixation")
   
   stopifnot(length(outcome_categories) == 1)
   
   if (outcome_categories == "obj") {
     out %<>%
-      rename(outcome = animal_type)
+      mutate(outcome = animal_type)
   } else if (outcome_categories == "loom") {
     out %<>%
       mutate(outcome = if_else(has_loom == 1, "loom", "no.loom"))
   } else if (outcome_categories == "obj.loom") {
     out %<>%
-      unite("outcome", animal_type, has_loom, sep = ".")
+      unite("outcome", animal_type, has_loom, sep = ".", remove = FALSE)
+  }
+  
+  recipe_steps_plsda <- function (x) {
+    x %>% 
+      # FIRST filter out food rows from the training to train on animals only 
+      # with skip = TRUE so that food will be LEFT IN the testing preds
+      # don't forget to break out testing preds by animals vs food
+      step_filter(animal_type != "food", skip = TRUE) %>% 
+      # then step_dummy on the `outcome` column makes the one-hot outcome columns necessary for PLS-DA
+      step_dummy(all_of("outcome"), role = "outcome", one_hot = TRUE, skip = TRUE)
   }
   
   if (!xval) {
@@ -349,7 +385,7 @@ fit_object_by_pattern <- function (path_pattern_allsubs,
       fit_pls_single(x_prefix = "voxel",
                      y_prefix = "outcome",
                      num_comp = n_pls_comp,
-                     additional_recipe_steps = \(x) step_dummy(x, all_of("outcome"), role = "outcome", one_hot = TRUE, skip = TRUE),
+                     additional_recipe_steps = recipe_steps_plsda,
                      rm_x = TRUE,
                      return_longer = FALSE) %>% 
       pluck("model") %>% 
@@ -365,7 +401,7 @@ fit_object_by_pattern <- function (path_pattern_allsubs,
     fit_model_xval(x_prefix = "voxel",
                    y_prefix = "outcome",
                    parsnip_model = set_engine(parsnip::pls(mode = "regression", num_comp = n_pls_comp), engine = "plsr", method = "simpls"),
-                   additional_recipe_steps = \(x) step_dummy(x, all_of("outcome"), role = "outcome", one_hot = TRUE, skip = TRUE),
+                   additional_recipe_steps = recipe_steps_plsda,
                    rm_x = TRUE,
                    return_longer = FALSE) %>% 
     # 2025-05-05: We want to save the betas out now too for subsequent second-order correlation analysis with the encoding.selfreport models
@@ -373,10 +409,45 @@ fit_object_by_pattern <- function (path_pattern_allsubs,
     mutate(coefs = map(model, \(x) extract_pls_workflow_coefs(x),
                        .progress = "extracting coefs")) %>% 
     select(coefs, preds) %>% 
-    mutate(preds = map(preds, \(x) tidy_plsda_preds(x),
+    mutate(preds = map(preds, \(x) tidy_plsda_preds(x, apply_softmax = TRUE),
                        .progress = "cleaning up class predictions"),
            subj_num = map_dbl(preds, \(x) unique(x$subj_num)),
            preds = map(preds, \(x) select(x, -subj_num)))
+  
+  return (out)
+}
+
+fit_selfreport_by_pattern <- function (path_pattern_allsubs,
+                                       events_allsubs,
+                                       beh_allsubs) {
+  
+  ratings_by_encoding <- get_ratings_by_encoding_space(path_pattern_allsubs,
+                                                       left_join(events_allsubs,
+                                                                 beh_allsubs, 
+                                                                 by = c("subj_num", "video_id"))) %>% 
+    pivot_longer(cols = starts_with("rating"),
+                 names_to = "rating_type",
+                 values_to = "rating",
+                 names_prefix = "rating_")
+  
+  # fit_model_2level fits models within subject, with split-half (2-fold) validation by default
+  # this has 2 benefits here when fitting self-report
+  # 1. keeping each model within-subject avoids attempting to model between-subject variance, which may be high with self-report
+  # 2. it also avoids fitting models using data across cross-validation folds of the encoding model that produced the encoding patterns
+  out <- fit_model_2level(in_data = ratings_by_encoding,
+                          nest_vars = c("subj_num", "rating_type"),
+                          x_prefix = "voxel",
+                          y_var = "rating",
+                          additional_recipe_steps = \(x) step_filter(x, animal_type != "food", skip = TRUE),
+                          # 2025-04-11: Previously, at time of submission for CCN 2025 abstract, had set it to do lm
+                          # but I think that is causing the space model to perform way worse on split-half
+                          # bc there are more voxels than timepoints
+                          # 2025-06-30: now that we are restricting all main post-encoding-model analyses to fit on animal trials only,
+                          # we need more regularization here to reduce the fluctuation added by removing training data
+                          parsnip_model = set_engine(parsnip::pls(mode = "regression", num_comp = 20), engine = "plsr", method = "simpls"),
+                          rm_x = TRUE) %>% 
+    mutate(coefs = map(model, \(x) pluck(extract_fit_engine(x), "coefficients"))) %>% 
+    select(subj_num, rating_type, coefs, preds)
   
   return (out)
 }
@@ -394,7 +465,7 @@ get_ratings_by_encoding_space <- function (path_pred_allsubs, events_allsubs, pa
   
   out <- pred_encoding %>% 
     left_join(events_allsubs, by = c("subj_num", "tr_num")) %>% 
-    filter(!is.na(video_id)) %>% 
+    filter(!is.na(video_id), video_id != "fixation") %>% 
     group_by(subj_num, video_id) %>% 
     mutate(across(c(starts_with("rating"), animal_type, has_loom), \(x) x[1])) %>% 
     # many fewer lines of code to keep voxel and average over TR because voxel was already on the column
