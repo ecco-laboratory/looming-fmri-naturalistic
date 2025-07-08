@@ -16,13 +16,14 @@
 echo "Monitoring job: $1"
 JOB_ID_LOG=$(echo $1 | tr _ -)
 ARRAY_ID=$(echo $1 | cut -d '_' -f 2)
-LOG_FILE_PATH="/home/mthieu/log/sbatch_fmriprep.sh-${JOB_ID_LOG}.err"
+ERR_FILE_PATH="/home/laberma/log/sbatch_fmriprep.sh-${JOB_ID_LOG}.err"
+OUT_FILE_PATH="/home/laberma/log/sbatch_fmriprep.sh-${JOB_ID_LOG}.out"
 while true
 do
     # find the error message in the log file
     # if the error message is present, cancel the job and restart both fmriprep and the monitoring process
     # error message is present if grep output has more than 0 lines
-    GREP_LENGTH=$(grep "concurrent.futures.process.BrokenProcessPool" $LOG_FILE_PATH | wc -l)
+    GREP_LENGTH=$(grep "concurrent.futures.process.BrokenProcessPool" $ERR_FILE_PATH | wc -l)
     if [ $GREP_LENGTH -gt 0 ]; then 
         scancel $1
         echo "error found, cancelled job"
@@ -33,8 +34,11 @@ do
     fi
     # ideally: also monitor for whether the main fmriprep job has finished
     # if it has finished, end this script as well (and don't restart it)
-    if [ $(squeue | grep $1 | wc -l) -eq 0 ]; then 
+    GREP_FINISHED_LENGTH=$(tail -n 20 $OUT_FILE_PATH | grep "fMRIPrep finished successfully!" | wc -l)
+    if [ $GREP_FINISHED_LENGTH -gt 0 ]; then 
         echo "it finished"
+        chmod 770 -R /archival/projects/SPLaT/data/fmri/nifti/derivatives/fmriprep-23.1.4
+        rm -R /home/data/eccolab/SPLaT_fMRI/ignore/tmp/*
         exit
     fi
     # repeat every 5 seconds until script or job has ended

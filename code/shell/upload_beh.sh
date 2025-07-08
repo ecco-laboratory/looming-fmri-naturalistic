@@ -1,5 +1,5 @@
 #!/bin/bash
-# It only runs FROM Monica's local TO server rn
+# It only runs FROM Elias' local TO server rn
 
 read -p "Enter subj num(s) to upload with no leading 0s (but with spaces): " SUBJ_NUMS
 
