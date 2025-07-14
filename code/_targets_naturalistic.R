@@ -643,7 +643,7 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
                canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb_conn_%s_sc.nii", this_encoding_label)),
                                           roi = NULL,
                                           values = tvals.wb.model.connectivity,
-                                          threshold_p = .05,
+                                          threshold_p = .01,
                                           positive_only = TRUE,
                                           script = matlab_export_statmap)
              },
@@ -653,18 +653,17 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
                                                   path_connectivity_allsubs_1 = wb.model.connectivity,
                                                   script = matlab_parcellate_avg),
              format = "file"),
-  tar_target(name = sig.sim.ceko2022,
-             command = canlabtools_apply_wb_signature(out_path = here::here("ignore", "outputs", sprintf("naturalistic_sigsim-ceko2022_%s_sc.csv", encoding_type_full)),
+  tar_map(
+    values = tibble(sig_name = c("ceko2022", "kragel2015", "zhou2021"),
+                    sig_folder = c("2021_Ceko_MPA2_multiaversive", "2015_Kragel_emotionClassificationBPLS", "2021_Zhou_Subjective_Fear")),
+    tar_target(name = sig.sim,
+               command = canlabtools_apply_wb_signature(out_path = here::here("ignore", "outputs", sprintf("naturalistic_sigsim-%s_%s_sc.csv", sig_name, encoding_type_full)),
                                                       fmri_data = wb.model.connectivity,
-                                                      image_set_name = "multiaversive",
+                                                        pattern_subdir = sig_folder,
                                                       script = matlab_apply_wb_signature),
              format = "file"),
-  tar_target(name = sig.sim.kragel2015,
-             command = canlabtools_apply_wb_signature(out_path = here::here("ignore", "outputs", sprintf("naturalistic_sigsim-kragel2015_%s_sc.csv", encoding_type_full)),
-                                                      fmri_data = wb.model.connectivity,
-                                                      image_set_name = "kragelemotion",
-                                                      script = matlab_apply_wb_signature),
-             format = "file"),
+    names = sig_name
+  ),
   names = encoding_type_full
 )
 
@@ -787,9 +786,9 @@ subtargets_fmri_canlabtools_compare.models <- list(
                # 2025-04-09: Phil wants it this way (Tom Nichols citation?)
                # threshold the individual maps first
                tvals.flynet <- tvals.wb.model.connectivity_flynet.only %>% 
-                 threshold_tvals_pre_statmap(threshold_p = .05)
+                 threshold_tvals_pre_statmap(threshold_p = .01)
                tvals.alexnet <- tvals.wb.model.connectivity_alexnet.only %>% 
-                 threshold_tvals_pre_statmap(threshold_p = .05)
+                 threshold_tvals_pre_statmap(threshold_p = .01)
                
                pmin(tvals.flynet, tvals.alexnet)
                
@@ -801,14 +800,14 @@ subtargets_fmri_canlabtools_compare.models <- list(
                                             col_names = FALSE, 
                                             col_types = c(.default = "d")) %>% 
                  summarize_tvals_pre_statmap() %>% 
-                 threshold_tvals_pre_statmap(threshold_p = .05)
+                 threshold_tvals_pre_statmap(threshold_p = .01)
                
                tvals_alexnet <- vroom::vroom(wb.model.connectivity_alexnet.only, 
                                              delim = ",", 
                                              col_names = FALSE, 
                                              col_types = c(.default = "d")) %>% 
                  summarize_tvals_pre_statmap() %>% 
-                 threshold_tvals_pre_statmap(threshold_p = .05)
+                 threshold_tvals_pre_statmap(threshold_p = .01)
                
                # there are many voxels where the difference is supra-threshold non-zero but the higher value isn't supra-threshold on its own
                # so for the diff statmap, zero out voxels ahead of time where the higher value on its own doesn't exceed 0
@@ -821,7 +820,7 @@ subtargets_fmri_canlabtools_compare.models <- list(
                canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb_conn_flynet_minus_alexnet_sc.nii")),
                                           roi = NULL,
                                           values = tvals_diff,
-                                          threshold_p = .05,
+                                          threshold_p = .01,
                                           script = matlab_export_statmap)
              },
              format = "file"),
@@ -832,6 +831,21 @@ subtargets_fmri_canlabtools_compare.models <- list(
                                           values = tvals.wb.model.connectivity_flynet.conj.alexnet,
                                           script = matlab_export_statmap)
              },
+             format = "file"),
+  # not a statmap! a preplot
+  tar_target(name = wb.atlas_selected.rois,
+             command = canlabtools_export_mask_nifti(out_path = here::here("ignore", "outputs", sprintf("mask_selected_rois.nii")),
+                                                     # all of the Ctx_ ones to the Glasser atlas will match both left and right hemispheres
+                                                     rois = list("Ctx_IFJ", # will match IFJa and IFJp
+                                                                 "Ctx_FEF",
+                                                                 c("Ctx_FFC", "Ctx_VVC"),
+                                                                 c("Ctx_IPS1", "Ctx_MIP", "Ctx_LIP", "Ctx_VIP"),
+                                                                 # the subcortical ones (other than SC which will come from Brainstem Navigator) are irreducibly bilateral
+                                                                 "Amygdala",
+                                                                 "Bstem_SC", 
+                                                                 "Thal_Pulv",
+                                                                 "Thal_LGN"),
+                                                     script = matlab_export_mask_nifti),
              format = "file")
 )
 
