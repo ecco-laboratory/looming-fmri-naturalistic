@@ -228,7 +228,8 @@ compare_betas_encoding_category_selfreport <- function (betas_loom,
 preproc_auroc_loom_from_obj <- function (unnested_decoding_preds) {
   out <- unnested_decoding_preds %>% 
     unnest_longer(.preds, values_to = ".pred_animal", indices_to = "animal_to_use") %>% 
-    mutate(has_loom = fct_recode(as.character(has_loom), "yes" = "1", "no" = "0"), 
+    mutate(animal_to_use = str_remove(animal_to_use, ".pred_outcome_"),
+           has_loom = fct_recode(as.character(has_loom), "yes" = "1", "no" = "0"), 
            has_loom = fct_relevel(has_loom, "yes"))
   
   return (out)
