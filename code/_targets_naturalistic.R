@@ -233,7 +233,35 @@ targets_qc <- list(
                summarize(n_spike_runs = sum(n_spikes > 0), n_spikes_total = sum(n_spikes)) %>% 
                # 2025-04-07: EXCLUDE SUBJECTS WHO HAVE A SPIKE IN ALL THREE RUNS
                # if you look, those subjects are also the ones who are moving a fuckton
-               arrange(desc(n_spike_runs)))
+               arrange(desc(n_spike_runs))),
+  tar_target(name = signal_quality_by_stims,
+             command = signal_quality %>% 
+               group_by(subj_num, run_num) %>% 
+               mutate(tr_num = 1:n()) %>% 
+               filter(tr_num > 16) %>% 
+               group_by(subj_num) %>% 
+               mutate(tr_num = 1:n()) %>% 
+               ungroup() %>% 
+               # TODO: events.timecourse_all.subs only contains included subjects
+               # stretch goal: make an alternate version of that target that instead crawls every available beh events csv, including from "excluded" subjects
+               # just like how signal_quality gets it
+               left_join(events.timecourse_all.subs, by = c("subj_num", "tr_num")) %>% 
+               filter(video_id != "fixation") %>% 
+               group_by(video_id, subj_num) %>% 
+               summarize(max_fd = max(framewise_displacement), 
+                         max_log.fd = max(log(framewise_displacement))) %>% 
+               left_join(stims %>% 
+                           select(video, has_loom, animal_type), 
+                         by = c("video_id" = "video"))
+             ),
+  tar_target(name = plot_signal_quality_by_stims,
+             command = ggplot(signal_quality_by_stims,
+                              aes(x = animal_type, 
+                                  y = max_fd, 
+                                  color = factor(has_loom))) + 
+               geom_hline(yintercept = 0, linetype = "dotted") + 
+               geom_jitter(width = 0.1, alpha = 0.1) + 
+               geom_pointrange(stat = "summary", fun.data = "mean_se"))
 )
 
 # targets: maps out by subject x run ----
