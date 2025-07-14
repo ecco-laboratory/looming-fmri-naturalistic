@@ -288,34 +288,6 @@ relabel_timecourse_endspike <- function (timecourse,
   return (out)
 }
 
-# similar to above, but instead of returning fixed-length windows anchored at different points in the stimulus video
-# returns the full original boxcar but with an added tail of "stimulus"-labeled TRs at the end
-# to account for hemodynamic lag relative to stimulus presentation
-# tail length of 0 is equivalent to the original timecourse
-# it doesn't handle negative tails right now so don't try it
-relabel_timecourse_boxcartail <- function (timecourse,
-                                           tail_length = 10L) {
-  timecourse$video_id_lagged <- NA
-  
-  for (i in 1:(nrow(timecourse)-1)) {
-    # if it's any video TR, label it
-    if (timecourse$video_id[i] != "fixation") {
-      timecourse$video_id_lagged[i] <- timecourse$video_id[i]
-      # if it's the final TR, calculate and label the tail as well
-      if(timecourse$video_id[i+1] == "fixation") {
-        this_window_end <- i+tail_length
-        timecourse$video_id_lagged[i:this_window_end] <- timecourse$video_id[i]
-      }
-    }
-  }
-  
-  out <- timecourse %>% 
-    select(-video_id) %>% 
-    rename(video_id = video_id_lagged)
-  
-  return (out)
-}
-
 # this one assembles activation timecourses and then outputs to header-less tabular data for matlab
 make_encoding_timecourse_matlab <- function (onsets, 
                                              path_stim_activations,

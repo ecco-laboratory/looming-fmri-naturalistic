@@ -396,11 +396,6 @@ subtargets_fmri_across.subject <- list(
              command = events.timecourse_all.subs %>% 
                nest(events = -c(subj_num, fold_num)) %>% 
                mutate(events = map(events, \(x) relabel_timecourse_endspike(x))) %>% 
-               unnest(events)),
-  tar_target(events.timecourse.boxcartail_all.subs,
-             command = events.timecourse_all.subs %>% 
-               nest(events = -c(subj_num, fold_num)) %>% 
-               mutate(events = map(events, \(x) relabel_timecourse_boxcartail(x))) %>% 
                unnest(events))
 )
 
@@ -485,9 +480,9 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
              },
              format = "file"),
   tar_map(
-    values = crossing(events_type = c("events.raw", "events.endspike", "events.boxcartail"),
+    values = crossing(events_type = c("events.raw", "events.endspike"),
                       outcome_category = c("loom", "obj", "obj.loom")) %>% 
-      mutate(events_label = case_match(events_type, "events.raw" ~ "", "events.endspike" ~ ".endspike", "events.boxcartail" ~ ".boxcartail"),
+      mutate(events_label = case_match(events_type, "events.raw" ~ "", "events.endspike" ~ ".endspike"),
              events_target = syms(sprintf("events.timecourse%s_all.subs", events_label))),
     tar_target(name = encoding.decoding,
                command = pred.encoding.xval %>%
@@ -662,9 +657,9 @@ subtargets_fmri_canlabtools_compare.models <- list(
               }),
   #### decoding-from-encoding analyses mapped by decoding quantity and events labeling type ----
   tar_map(
-    values = crossing(events_type = c("events.raw", "events.endspike", "events.boxcartail"),
+    values = crossing(events_type = c("events.raw", "events.endspike"),
                       outcome_category = c("loom", "obj", "obj.loom")) %>% 
-      mutate(events_label = case_match(events_type, "events.raw" ~ "", "events.endspike" ~ ".endspike", "events.boxcartail" ~ ".boxcartail"),
+      mutate(events_label = case_match(events_type, "events.raw" ~ "", "events.endspike" ~ ".endspike"),
              events_target = syms(sprintf("events.timecourse%s_all.subs", events_label))),
     tar_target(name = bold.object,
                command = bold.masked.sc_all.subs %>%
