@@ -1670,21 +1670,24 @@ targets_plots <- list(
 ### plots for supplemental figures, set off for convenience ----
 targets_plots_supp <- list(
   tar_target(plot_alexnet.guesses,
-             command = plot_predicted_alexnet_categories(activations.alexnet_raw,
+             command = get_alexnet_guesses(activations.alexnet_raw,
                                                          stims %>% 
                                                            select(video, animal_type, looming = has_loom) %>% 
-                                                           mutate(looming = if_else(looming == 1, "looming", "no looming")),
+                                             mutate(looming = if_else(looming == 1, "Looming", "No looming")),
                                                          imagenet_category_labels,
-                                                         lump_prop = .1) +
-               paletteer::scale_fill_paletteer_d("MetBrewer::Signac") +
+                                           n_top = 1) %>% 
+               plot_predicted_alexnet_categories(n_top = 1) +
                this_theme
              ),
   tar_target(plot_alexnet.guesses.controlled,
-             command = plot_predicted_alexnet_categories(activations.alexnet_raw_controlled,
+             command = get_alexnet_guesses(activations.alexnet_raw_controlled,
                                                          metadata_videos_nback %>% 
                                                            select(video = filename, animal_type, looming = direction),
                                                          imagenet_category_labels,
-                                                         lump_prop = .05)),
+                                           n_top = 1) %>% 
+               plot_predicted_alexnet_categories(n_top = 1) +
+               this_theme
+  ),
   tar_target(plot_alexnet.guesses.controlled_framewise,
              command = plot_predicted_alexnet_categories_framewise(activations.alexnet_raw_controlled,
                                                                    metadata_videos_nback %>% 
@@ -1926,9 +1929,24 @@ targets_figs.ms.supp <- list(
              format = "file"),
   tar_target(fig_ms.supp_alexnet.guesses,
              command = ggsave(here::here("ignore", "figs", "ms.supp_alexnet.guesses.png"),
-                              plot = plot_alexnet.guesses,
-                              width = 2000,
-                              height = 1600,
+                              plot = plot_alexnet.guesses +
+                                scale_fill_manual(values = colors_ms_loom.noloom) +
+                                theme(legend.position = "inside",
+                                      legend.position.inside = c(0,1),
+                                      legend.justification.inside = c(0,1)),
+                              width = 1200,
+                              height = 2000,
+                              units = "px"),
+             format = "file"),
+  tar_target(fig_ms.supp_alexnet.guesses_controlled,
+             command = ggsave(here::here("ignore", "figs", "ms.supp_alexnet.guesses_controlled.png"),
+                              plot = plot_alexnet.guesses_controlled +
+                                scale_fill_manual(values = colors_ms_loom.noloom) +
+                                theme(legend.position = "inside",
+                                      legend.position.inside = c(0,1),
+                                      legend.justification.inside = c(0,1)),
+                              width = 1200,
+                              height = 2000,
                               units = "px"),
              format = "file"),
   tar_target(fig_ms.supp_norms.controlled,

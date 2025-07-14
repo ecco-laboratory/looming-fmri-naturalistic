@@ -406,31 +406,21 @@ plot_encoding_selfreport_combined <- function (summary_encoding_selfreport_cor,
     facet_wrap(~ rating_type)
 }
 
-plot_predicted_alexnet_categories <- function (path_alexnet_activations, stim_labels, path_imagenet_categories, lump_prop = .1) {
-  read_csv(path_alexnet_activations) %>% 
-    right_join(stim_labels, 
-               by = "video") %>% 
-    nest(.by = c(video, frame, animal_type, looming), .key = "activations") %>% 
-    mutate(activations = map(activations, as.matrix)) %>% 
-    mutate(max_indices_from0 = map_dbl(activations, \(x) apply(x, 1, which.max) - 1)) %>% 
-    select(-activations) %>% 
-    left_join(read_csv(path_imagenet_categories), by = c("max_indices_from0" = "index")) %>% 
+plot_predicted_alexnet_categories <- function (alexnet_guesses, n_top) {
+  if (n_top == 1) {
+    acc_col <- sym("correct_top.1")
+  } else {
+    acc_col <- sym("correct_top.n")
+  }
+  alexnet_guesses %>% 
+    # treat each frame as independent--but this has the benefit of effectively weighting accuracy by video duration
     group_by(animal_type, looming) %>% 
-    mutate(categories_lumped = fct_lump_prop(categories, prop = lump_prop, other_level = "other")) %>% 
-    count(animal_type, looming, categories_lumped) %>% 
-    arrange(animal_type, looming, desc(categories_lumped)) %>% 
-    mutate(prop = n/sum(n),
-           bar_max = cumsum(prop), 
-           bar_min = coalesce(lag(bar_max), 0), 
-           bar_mid = bar_min + (bar_max-bar_min)/2) %>% 
-    ggplot(aes(x = looming, y = prop, fill = categories_lumped)) + 
-    geom_col() + 
-    geom_text(aes(y = bar_mid, label = categories_lumped)) + 
-    facet_wrap(~animal_type) + 
-    scale_fill_brewer(type = "qual", palette = "Set3") +
-    guides(fill = "none") +
-    labs(x = NULL,
-         y = "Top-1 ImageNet superordinate class probability")
+    summarize(acc = mean(!!acc_col), .groups = "drop") %>% 
+    mutate(animal_type = fct_relevel(animal_type, "dog", "cat", "frog", "spider")) %>% 
+    ggplot(aes(x = animal_type, y = acc, fill = looming)) + 
+    geom_col(position = "dodge") + 
+    labs(x = "Object category\n(experimenter-labeled)",
+         y = glue::glue("Top-{n_top} ImageNet superordinate class accuracy\n(framewise predictions)"))
 }
 
 plot_predicted_alexnet_categories_framewise <- function (path_alexnet_activations, stim_labels, path_imagenet_categories, lump_prop = .1) {
