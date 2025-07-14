@@ -61,7 +61,7 @@ for s =  [1:10 12:15 17 19:46  ] %for each of 15 subjects; [1:10 12:15 17
         session_means = [session_means; j*ones(height(readmatrix([confound_files(j).folder filesep confound_files(j).name])),1)];
     end
 
-
+    % TODO: append confounds back into DAT so that canlab_connectivity_preproc will do confound regression
     preprocessed_dat = canlab_connectivity_preproc(DAT,'hpf', 1/128,TR, 'no_plots');
 
 
