@@ -1523,7 +1523,7 @@ targets_plots <- list(
   tar_target(name = plot_ggseg.conn_flynet_lat.med,
              command = parcels.wb.connectivity_flynet.only %>% 
                get_parcel_tvals_long() %>% 
-               label_parcel_pvals_long() %>% 
+               label_parcel_pvals_long(threshold_p = .01) %>% 
                plot_parcel_connectivity_ggseg(fill_col = tval,
                                               pval_col = pval,
                                               ggseg_sides = c("lateral", "medial"),
@@ -1535,7 +1535,7 @@ targets_plots <- list(
   tar_target(name = plot_ggseg.conn_flynet_dors.vent,
              command = parcels.wb.connectivity_flynet.only %>% 
                get_parcel_tvals_long() %>% 
-               label_parcel_pvals_long() %>% 
+               label_parcel_pvals_long(threshold_p = .01) %>% 
                plot_parcel_connectivity_ggseg(fill_col = tval,
                                               pval_col = pval,
                                               ggseg_sides = c("dorsal", "ventral"),
@@ -1546,7 +1546,7 @@ targets_plots <- list(
   tar_target(name = plot_ggseg.conn_alexnet_lat.med,
              command = parcels.wb.connectivity_alexnet.only %>% 
                get_parcel_tvals_long() %>% 
-               label_parcel_pvals_long() %>% 
+               label_parcel_pvals_long(threshold_p = .01) %>% 
                plot_parcel_connectivity_ggseg(fill_col = tval,
                                               pval_col = pval,
                                               ggseg_sides = c("lateral", "medial"),
@@ -1557,93 +1557,11 @@ targets_plots <- list(
   tar_target(name = plot_ggseg.conn_alexnet_dors.vent,
              command = parcels.wb.connectivity_alexnet.only %>% 
                get_parcel_tvals_long() %>% 
-               label_parcel_pvals_long() %>% 
+               label_parcel_pvals_long(threshold_p = .01) %>% 
                plot_parcel_connectivity_ggseg(fill_col = tval,
                                               pval_col = pval,
                                               ggseg_sides = c("dorsal", "ventral"),
                                               max_fill_tval = 10) + 
-               theme_brain
-  ),
-  tar_target(name = preplot_ggseg.conn_conj,
-             command = {
-               flynet <- parcels.wb.connectivity_flynet.only %>% 
-                 get_parcel_tvals_long() %>% 
-                 label_parcel_pvals_long() %>% 
-                 rename(tval_1 = tval, pval_1 = pval)
-               
-               alexnet <- parcels.wb.connectivity_alexnet.only %>% 
-                 get_parcel_tvals_long() %>% 
-                 label_parcel_pvals_long() %>% 
-                 rename(tval_2 = tval, pval_2 = pval)
-               
-               diffs <- parcels.wb.connectivity_flynet.minus.alexnet %>% 
-                 get_parcel_tvals_long() %>% 
-                 label_parcel_pvals_long() %>% 
-                 rename(tval_diff = tval, pval_diff = pval)
-               
-               conjs <- parcels.wb.connectivity_flynet.conj.alexnet %>% 
-                 get_parcel_tvals_long() %>% 
-                 label_parcel_pvals_long() %>% 
-                 rename(tval_conj = tval, pval_conj = pval)
-               
-               reduce(list(flynet, alexnet, diffs, conjs), \(x, y) full_join(x, y, by = "label")) %>% 
-                 mutate(level_conjunction = if_else(tval_conj > 0, "conjunction", NA_character_),
-                        # only label the diff when the higher value is also itself _significantly_ above 0
-                        level_diff = case_when(tval_diff > 0 & tval_1 > 0 & pval_1 < .05 ~ "looming > object",
-                                               tval_diff < 0 & tval_2 > 0 & pval_2 < .05 ~ "object > looming",
-                                               TRUE ~ NA_character_),
-                        superregion = case_when(grepl("IFJ", label) | grepl("FEF", label) ~ "prefrontal",
-                                                grepl("FFC", label) | grepl("VVC", label) ~ "ventral temporal",
-                                                grepl("IPS1", label) | grepl("MIP", label) | grepl("LIP", label) ~ "superior parietal",
-                                                TRUE ~ NA_character_),
-                        outline = case_when(!is.na(superregion) ~ "apriori",
-                                            !is.na(level_conjunction) & pval_conj < .05 ~ level_conjunction,
-                                            # needs to be non-NA so that it will arrange in the usual alphabetical order
-                                            TRUE ~ "zzz"))
-               }
-  ),
-  tar_target(name = plot_ggseg.conn_conj_lat.med,
-             command = preplot_ggseg.conn_conj %>% 
-               plot_parcel_connectivity_ggseg(fill_col = tval_conj,
-                                              pval_col = pval_conj,
-                                              ggseg_sides = c("lateral", "medial"),
-                                              ggseg_position = hemi ~ side,
-                                              max_fill_tval = 10,
-                                              viridis_palette = "plasma") + 
-               theme_brain
-  ),
-  tar_target(name = plot_ggseg.conn_conj_dors.vent,
-             command = preplot_ggseg.conn_conj %>% 
-               plot_parcel_connectivity_ggseg(fill_col = tval_conj,
-                                              pval_col = pval_conj,
-                                              ggseg_sides = c("dorsal", "ventral"),
-                                              max_fill_tval = 10,
-                                              viridis_palette = "plasma") + 
-               theme_brain
-  ),
-  tar_target(name = plot_ggseg.conn_conj.diff_lat.med,
-             command = preplot_ggseg.conn_conj %>% 
-               # order matters for coalesce, if both have a value use the diff label
-               mutate(significance_color = case_when(level_diff == "looming > object" & pval_diff < .05 ~ level_diff,
-                                                     level_diff == "object > looming" & pval_diff < .05 ~ level_diff,
-                                                     !is.na(level_conjunction) & pval_conj < .05 ~ level_conjunction,
-                                                     TRUE ~ NA_character_)) %>% 
-               plot_parcel_connectivity_ggseg_cat(fill_col = significance_color,
-                                                  # then outline target parcels
-                                                  outline_col = outline,
-                                                  ggseg_sides = c("lateral", "medial"),
-                                                  ggseg_position = hemi ~ side) + 
-               theme_brain
-  ),
-  tar_target(name = plot_ggseg.conn_conj.diff_dors.vent,
-             command = preplot_ggseg.conn_conj %>% 
-               mutate(significance_color = case_when(level_diff == "looming > object" & pval_diff < .05 ~ level_diff,
-                                                     level_diff == "object > looming" & pval_diff < .05 ~ level_diff,
-                                                     !is.na(level_conjunction) & pval_conj < .05 ~ level_conjunction,
-                                                     TRUE ~ NA_character_)) %>% 
-               plot_parcel_connectivity_ggseg_cat(fill_col = significance_color,
-                                                  outline_col = outline,
-                                                  ggseg_sides = c("dorsal", "ventral")) + 
                theme_brain
              ),
   tar_target(name = plot_conn_scatter,
@@ -1651,19 +1569,39 @@ targets_plots <- list(
                                   object = get_parcel_values_long(parcels.wb.connectivity_alexnet.only),
                                   .id = "model_type") %>% 
                relabel_glasser_clt2ggseg() %>% 
-               mutate(superregion = case_when(startsWith(region, "IFJ") ~ "inferior frontal junction",
+               mutate(superregion = case_when(region %in% c("IFJa", "IFJp", "44", "45") ~ "inferior frontal gyrus",
                                               region == "FEF" ~ "frontal eye field",
-                                              region %in% c("FFC", "VVC") ~ "fusiform gyrus",
-                                              region %in% c("IPS1", "MIP", "LIPv", "LIPd") ~ "lateral intraparietal area",
-                                              TRUE ~ NA_character_)) %>% 
+                                              region %in% c("FFC", "VVC") ~ "ventral occipitotemporal cortex",
+                                              region %in% c("IPS1", "MIP", "LIPv", "LIPd", "VIP") ~ "intraparietal cortex",
+                                              region == "Amygdala" ~ "amygdala",
+                                              region == "Pulv" ~ "pulvinar",
+                                              region == "LGN" ~ "LGN",
+                                              TRUE ~ NA_character_),
+                      superregion = fct_relevel(superregion, 
+                                                "amygdala", 
+                                                "pulvinar", 
+                                                "LGN", 
+                                                "ventral occipitotemporal cortex", 
+                                                "intraparietal cortex", 
+                                                "frontal eye field", 
+                                                "inferior frontal gyrus")) %>% 
                filter(!is.na(superregion)) %>% 
                # currently averaging across hemispheres as well
                group_by(model_type, fold_num, superregion) %>% 
                summarize(value = mean(value)) %>% 
-               plot_parcel_connectivity_scatter(y_col = superregion,
-                                                color_col = model_type) +
+               plot_parcel_connectivity_scatter(facet_col = superregion) +
+               labs(color = "Connectivity type") +
                this_theme +
-               labs(color = "Connectivity type")
+               theme(axis.title.y = ggtext::element_markdown(),
+                     aspect.ratio = 3)
+  ),
+  tar_target(name = plot_conn_sig.sim,
+             command = wb.connectivity_sig.sim %>% 
+               # fine to make the colnames non syntactic, they will get pivoted down into a col before they get sent into plot axes
+               rename_with(.fn = \(x) str_replace(x, "_", ": "), .cols = -c(model_type, fold_num)) %>% 
+               plot_sig_sim() +
+               this_theme +
+               theme(aspect.ratio = 3)
   )
 )
 
@@ -1867,7 +1805,18 @@ targets_figs.ms <- list(
                                       legend.position.inside = c(1,1),
                                       legend.justification.inside = c(1,1)),
                               width = 2400,
-                              height = 1200,
+                              height = 2400,
+                              units = "px"),
+             format = "file"),
+  tar_target(fig_ms_conn_sig.sim,
+             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_conn.sig.sim.png"),
+                              plot = plot_conn_sig.sim + 
+                                scale_color_manual(values = colors_ms_looming.object, na.translate = FALSE) +
+                                theme(legend.position = "inside",
+                                      legend.position.inside = c(0,1),
+                                      legend.justification.inside = c(0,1)),
+                              width = 2400,
+                              height = 2400,
                               units = "px"),
              format = "file"),
   tar_target(name = fig_ms_ratings,
@@ -1901,7 +1850,8 @@ targets_figs.ms <- list(
              command = vctrs::vec_c(flynet = statmap.wb.model.connectivity_flynet.only,
                                     alexnet = statmap.wb.model.connectivity_alexnet.only,
                                     conjunction = statmap.wb.model.connectivity_flynet.conj.alexnet,
-                                    difference = statmap.wb.model.connectivity_flynet.minus.alexnet),
+                                    difference = statmap.wb.model.connectivity_flynet.minus.alexnet,
+                                    labels = wb.atlas_selected.rois),
              format = "file")
 )
 
@@ -1966,39 +1916,7 @@ targets_figs.ms.supp <- list(
                               width = 4200,
                               height = 2000,
                               units = "px"),
-             format = "file"),
-  tar_eval(
-    tar_target(name = target_name,
-               command = ggsave(fig_path,
-                                plot = plot_name,
-                                width = 4000,
-                                height = 2000,
-                                units = "px"),
-               format = "file"),
-    values = crossing(encoding_type = c("flynet", "alexnet", "conj"),
-                      ggseg_side = c("lat.med", "dors.vent")) %>% 
-      mutate(plot_name = syms(paste("plot_ggseg.conn", encoding_type, ggseg_side, sep = "_")),
-             target_name = syms(paste("fig_ms.supp_ggseg.conn", encoding_type, ggseg_side, sep = "_")),
-             fig_path = here::here("ignore", "figs", sprintf("ms.supp_naturalistic_ggseg.conn_%s_%s.png", encoding_type, ggseg_side)))
-  ),
-  tar_eval(
-    tar_target(name = target_name,
-               command = ggsave(fig_path,
-                                plot = plot_name +
-                                  scale_fill_manual(values = colors_ms_looming.object.conj) +
-                                  scale_color_manual(values = c("apriori" = "white",
-                                                                scales::col_darker(colors_ms_looming.object.conj["conjunction"], 20),
-                                                                "zzz" = "grey35"),
-                                                     na.translate = FALSE),
-                                width = 4000,
-                                height = 2000,
-                                units = "px"),
-               format = "file"),
-    values = tibble(ggseg_side = c("lat.med", "dors.vent")) %>% 
-      mutate(plot_name = syms(paste("plot_ggseg.conn_conj.diff", ggseg_side, sep = "_")),
-             target_name = syms(paste("fig_ms.supp_ggseg.conn_conj.diff",ggseg_side, sep = "_")),
-             fig_path = here::here("ignore", "figs", sprintf("ms.supp_naturalistic_ggseg.conn_conj.diff_%s.png", ggseg_side)))
-  )
+             format = "file")
 )
 
 ## final combo call ----
