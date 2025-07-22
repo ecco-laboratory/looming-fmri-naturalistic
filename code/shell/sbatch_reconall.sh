@@ -4,7 +4,6 @@
 #SBATCH --exclude=node3
 #SBATCH --time=0-24:00:00
 #SBATCH --mem=24G
-#SBATCH --gres=gpu:1
 #SBATCH --partition day-long  # Queue names you can submit to
 # Outputs ----------------------------------
 #SBATCH -o /home/%u/log/%x-%A-%a.out
