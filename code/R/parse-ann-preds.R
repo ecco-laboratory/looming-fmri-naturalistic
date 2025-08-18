@@ -28,6 +28,7 @@ get_alexnet_guesses <- function (path_alexnet_activations, stim_labels, path_ima
                            magrittr::extract(1:n_top))) %>% 
     select(-activations) %>% 
     mutate(guesses = map(indices, \(x) imagenet_categories$categories[x]),
+           guess_specific = map_chr(indices, \(x) imagenet_categories$words[x[1]]),
            correct_top.1 = map2_lgl(animal_type_imagenet, guesses, \(x, y) any(x == y[1])),
            # remember, %in% vectorizes over the LEFT argument
            correct_top.n = map2_lgl(animal_type_imagenet, guesses, \(x, y) any(x %in% y))) %>% 

@@ -8,6 +8,7 @@ library(targets)
 library(tarchetypes)
 library(tidyverse)
 library(rlang)
+library(scales) # for some of the plot color definitions
 
 # Set target options:
 tar_option_set(
@@ -23,11 +24,12 @@ tar_option_set(
                "qualtRics",
                "ggseg",
                "ggsegGlasser",
+               "svglite",
                "ragg",
                "cowplot"), # packages that your targets need to run
   error = "trim",
   controller = crew.cluster::crew_controller_slurm(
-    workers = 8,
+    workers = 12,
     seconds_idle = 30,
     options_cluster = crew.cluster::crew_options_slurm(
       verbose = TRUE,
@@ -36,8 +38,8 @@ tar_option_set(
       log_error = "/home/%u/log/crew_log_%A.err",
       memory_gigabytes_required = 8,
       cpus_per_task = 1,
-      time_minutes = 1339,
-      partition = "day-long"
+      # time_minutes = 1339, partition = "day-long"
+      time_minutes = 29, partition = "short"
     )
   )
 )
@@ -133,7 +135,15 @@ targets_stimuli <- list(
              format = "file"),
   tar_target(imagenet_category_labels,
              command = here::here("ignore", "imagenet_categories_synset.csv"),
-             format = "file")
+             format = "file"),
+  tar_target(alexnet.guesses_videos,
+             command = get_alexnet_guesses(activations.alexnet_raw,
+                                           stims %>% 
+                                             select(video, animal_type, looming = has_loom) %>% 
+                                             mutate(looming = if_else(looming == 1, "Looming", "No looming")),
+                                           imagenet_category_labels,
+                                           n_top = 1)
+  )
 )
 
 ## targets: fMRI stimlist materials for naturalistic jumpy videos task ----
@@ -277,7 +287,9 @@ participants <- inject(here::here(!!!path_here_fmri, "participants.tsv")) %>%
   read_tsv(comment = "#") %>% 
   # Anyone who didn't do all 3 runs should be marked as unusable for naturalistic
   filter(group %in% c("use_both", "use_naturalistic")) %>% 
-  select(subject = participant_id)
+  select(subject = participant_id) %>% 
+  # 2025-07-15: NATURALISTIC MANUSCRIPT 1 WILL CONTAIN ONLY DATA FROM SUBJECTS UP TO AND NOT INCLUDING sub-0050
+  filter(as.integer(str_split_i(subject, "-", 2)) < 50)
 
 # TODO 2025-04-03: can we decode object category directly from AlexNet activations? which category units activate in response to the different stimuli?
 subtargets_encoding.timecourses_by.run <- list(
@@ -556,6 +568,9 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
                                        outcome_categories = outcome_category,
                                        n_pls_comp = 20,
                                        xval = FALSE)
+    ),
+    tar_target(name = encoding.decoding.selfreport,
+               command = fit_selfreport_by_decoding(encoding.decoding, beh)
     ),
     names = c(outcome_category, events_type)
   ),
@@ -856,6 +871,20 @@ subtargets_fmri_canlabtools_combined <- list(
                   bind_rows(.id = "target_name") %>% 
                   separate_wider_delim(cols = target_name, delim = "_", names = c(NA, "encoding_type"))
               }),
+  tar_target(name = perf.encoding_flynet.alexnet.rbound,
+             command = {
+               list(flynet = perf.encoding.xval_flynet.only,
+                    alexnet = perf.encoding.xval_alexnet.only) %>% 
+                 # must average across voxels to consider data across ROIs
+                 # but retain xval folds
+                 map(\(x) x %>% 
+                       rowwise() %>% 
+                       mutate(perf = mean(c_across(everything()))) %>% 
+                       ungroup() %>% 
+                       mutate(fold_num = 1:n()) %>% 
+                       select(fold_num, perf)) %>% 
+                 bind_rows(.id = "encoding_type")
+             }),
   tar_combine(name = pred.encoding.xval,
               tar_select_targets(subtargets_fmri_canlabtools_compare.models, 
                                  starts_with("pred.encoding.xval")),
@@ -888,14 +917,14 @@ subtargets_fmri_canlabtools_combined <- list(
             select(-coefs) %>% 
             unnest(preds) %>% 
             filter(animal_type != "food") %>% 
-            permutations(permute = animal_type, times = 500) %>% 
+            permutations(permute = animal_type, times = 200) %>% 
             mutate(perm_auroc = map(splits, \(x) analysis(x) %>% 
                                       preproc_auroc_obj_from_loom() %>% 
                                       roc_auc(truth = animal_value, .pred_outcome_loom),
                                     .progress = "permuting")) %>% 
             select(-splits) %>% 
             unnest(perm_auroc),
-          batches = 20,
+          batches = 50,
           reps = 1
   ),
   tar_target(name = auroc.cross.allway_encoding.discrim.object,
@@ -924,7 +953,7 @@ subtargets_fmri_canlabtools_combined <- list(
             select(-coefs) %>% 
             unnest(preds) %>% 
             filter(animal_type != "food") %>% 
-            permutations(permute = has_loom, times = 500) %>% 
+            permutations(permute = has_loom, times = 200) %>% 
             mutate(perm_auroc = map(splits, \(x) analysis(x) %>% 
                                       preproc_auroc_loom_from_obj() %>% 
                                       group_by(animal_to_use) %>% 
@@ -932,8 +961,16 @@ subtargets_fmri_canlabtools_combined <- list(
                                     .progress = "permuting")) %>% 
             select(-splits) %>% 
             unnest(perm_auroc),
-          batches = 20,
+          batches = 50,
           reps = 1
+  ),
+  tar_target(name = encoding.decoding.selfreport_rbound,
+    command = encoding.decoding.selfreport_obj_events.raw_alexnet.only %>% 
+      filter(outcome != "food") %>% 
+      bind_rows(object = .,
+                looming = encoding.decoding.selfreport_loom_events.raw_flynet.only,
+                .id = "encoding_type") %>% 
+      mutate(outcome = factor(outcome, levels = c("loom", "dog", "cat", "frog", "spider")))
   )
 )
 
@@ -945,8 +982,15 @@ subtargets_fmri_canlabtools_combined <- list(
 store_controlled <- here::here("ignore", "_targets", "controlled")
 metadata_videos_nback <- tar_read(metadata_videos_nback, store = store_controlled)
 plot_controlled_norms <- tar_read(plot_norms, store = store_controlled)
+beh_controlled_moresubs <- tar_read(beh, store = store_controlled)
 
 targets_controlled <- list(
+  tar_target(beh_controlled,
+             command = beh_controlled_moresubs %>% 
+               filter(sprintf("sub-%04d", subj_num) %in% participants$subject) %>% 
+               # quickie col for summarizing accuracy later
+               mutate(resp_correct = !is.na(rt) == resp_expected)
+             ),
   tar_target(activations.flynet_raw_controlled,
              command = here::here("ignore",
                                   "data",
@@ -959,6 +1003,12 @@ targets_controlled <- list(
                                   "encoding",
                                   "activations.alexnet_controlled.csv"),
              format = "file"),
+  tar_target(alexnet.guesses_controlled,
+             command = get_alexnet_guesses(activations.alexnet_raw_controlled,
+                                           metadata_videos_nback %>% 
+                                             select(video = filename, animal_type, looming = direction),
+                                           imagenet_category_labels,
+                                           n_top = 1)),
   tar_files(con.files_level1.5_controlled,
             command = list.files(here::here("ignore", "data", "canlabtools"), 
                                  pattern = "task-controlled_region-sc_con-.*ing\\..*\\.baseline.csv",
@@ -974,23 +1024,31 @@ targets_controlled <- list(
                read_csv(file_path, col_names = FALSE) %>% 
                  mutate(condition = condition) %>% 
                  separate_wider_delim(cols = condition, delim = ".", names = c("direction", "animal_type")) %>% 
-                 select(direction, animal_type, subj_num = X1, everything())
+                 select(direction, animal_type, subj_num = X1, everything()) %>% 
+                 # make sure to yoke these results to just the participants going into this naturalistic manuscript
+                 filter(sprintf("sub-%04d", subj_num) %in% participants$subject)
                },
              pattern = map(con.files_level1.5_controlled)),
   tar_target(bold.object.controlled,
              command = classify_controlled(cons_level1.5_controlled, outcome_var = animal_type)),
   tar_target(bold.looming.controlled,
              command = classify_controlled(cons_level1.5_controlled, outcome_var = direction)),
-  tar_target(perm_bold.object.controlled,
-             command = permute_xval_classification(bold.object.controlled, n_perms = 10000)),
-  tar_target(perm_bold.object.controlled_by.category,
-             command = permute_xval_classification(bold.object.controlled, n_perms = 10000, grouping_cols = .obs)),
-  tar_target(perm_bold.looming.controlled,
-             command = permute_xval_classification(bold.looming.controlled, n_perms = 10000)),
+  tar_rep(perm_bold.object.controlled,
+          command = bold.object.controlled %>% 
+            select(-coefs) %>% 
+            unnest(preds) %>% 
+            permute_xval_classification(n_perms = 500),
+          batches = 20,
+          reps = 1),
+  tar_rep(perm_bold.looming.controlled,
+          command = bold.looming.controlled %>% 
+            select(-coefs) %>% 
+            unnest(preds) %>% 
+            permute_xval_classification(n_perms = 500),
+          batches = 20,
+          reps = 1),
   tar_target(summary_bold.object.controlled,
              command = calc_xval_perf(bold.object.controlled, df_perms = perm_bold.object.controlled)),
-  tar_target(summary_bold.object.controlled_by.category,
-             command = calc_xval_perf(bold.object.controlled, grouping_cols = .obs, df_perms = perm_bold.object.controlled_by.category)),
   tar_target(summary_bold.looming.controlled,
              command = calc_xval_perf(bold.looming.controlled, df_perms = perm_bold.looming.controlled)),
   tar_target(pattern.activation.controlled_flynet,
@@ -998,12 +1056,112 @@ targets_controlled <- list(
                                                           activations.flynet_raw_controlled,
                                                           metadata_videos_nback,
                                                           betas.encoding.xval_flynet.only)),
+  tar_target(pattern.activation.controlled_alexnet,
+             command = calc_controlled_pattern_expression(cons_level1.5_controlled,
+                                                          activations.alexnet_raw_controlled,
+                                                          metadata_videos_nback,
+                                                          betas.encoding.xval_alexnet.only)),
+  tar_target(pattern.discrim.controlled_headless_flynet,
+             command = calc_controlled_pattern_discrim_headless(cons_level1.5_controlled,
+                                                                encoding.decoding_loom_events.raw_flynet.only) %>% 
+               # must do this after the workhorse function bc it needs to bind along `direction`
+               mutate(direction = case_match(direction,
+                                             "looming" ~ "loom",
+                                             "receding" ~ "no.loom"),
+                      across(c(direction, .pred), factor)) %>% 
+               # should only have one of these cols for binary yardstick::roc_auc
+               # this is wack but the naturalistic decoder is predicting in the reverse direction
+               # though it _clearly_ contains information
+               select(-outcome_no.loom)
+  ),
+  tar_target(pattern.discrim.controlled_headless_alexnet,
+             command = calc_controlled_pattern_discrim_headless(cons_level1.5_controlled,
+                                                                encoding.decoding_obj_events.raw_alexnet.only) %>% 
+               mutate(across(c(animal_type, .pred), \(x) factor(x, levels = c("dog", "frog", "spider"))))
+  ),
+  tar_target(pattern.discrim.controlled_flynet,
+             command = calc_controlled_pattern_discrim(cons_level1.5_controlled,
+                                                       activations.flynet_raw_controlled,
+                                                       metadata_videos_nback,
+                                                       betas.encoding.xval_flynet.only,
+                                                       encoding.decoding_loom_events.raw_flynet.only) %>% 
+               # must do this after the workhorse function bc it needs to bind along `direction`
+               mutate(direction = case_match(direction,
+                                             "looming" ~ "loom",
+                                             "receding" ~ "no.loom"),
+                      across(c(direction, .pred), factor)) %>% 
+               # should only have one of these cols for binary yardstick::roc_auc
+               # this is wack but the naturalistic decoder is predicting in the reverse direction
+               # though it _clearly_ contains information
+               select(-outcome_no.loom)
+             ),
   tar_target(pattern.discrim.controlled_alexnet,
              command = calc_controlled_pattern_discrim(cons_level1.5_controlled,
                                                        activations.alexnet_raw_controlled,
                                                        metadata_videos_nback,
                                                        betas.encoding.xval_alexnet.only,
-                                                       encoding.decoding_obj_events.endspike_alexnet.only))
+                                                       encoding.decoding_obj_events.raw_alexnet.only) %>% 
+               mutate(across(c(animal_type, .pred), \(x) factor(x, levels = c("dog", "frog", "spider"))))
+             ),
+  tar_rep(perm_pattern.discrim.controlled_flynet,
+          command = permute_data_by_subject(pattern.discrim.controlled_flynet,
+                                            permute_col = direction,
+                                            n_perms = 200) %>% 
+            mutate(acc_perm = map(perm_data, \(x) metrics(x, 
+                                                          truth = direction, 
+                                                          estimate = .pred, 
+                                                          starts_with("outcome")),
+                                  .progress = "calculating perm acc")) %>% 
+            select(-perm_data),
+          batches = 50,
+          reps = 1),
+  tar_rep(perm_pattern.discrim.controlled_alexnet,
+          command = permute_data_by_subject(pattern.discrim.controlled_alexnet,
+                                            permute_col = animal_type,
+                                            n_perms = 200) %>% 
+            mutate(acc_perm = map(perm_data, \(x) metrics(x, 
+                                                          truth = animal_type, 
+                                                          estimate = .pred, 
+                                                          starts_with("outcome")),
+                                  .progress = "calculating perm acc")) %>% 
+            select(-perm_data),
+          batches = 50,
+          reps = 1),
+  tar_target(summary_pattern.discrim.controlled_flynet,
+             command = pattern.discrim.controlled_flynet %>% 
+               metrics(truth = direction, estimate = .pred, starts_with("outcome")) %>% 
+               calc_perm_pval_general(perms = perm_pattern.discrim.controlled_flynet)
+  ),
+  tar_target(summary_pattern.discrim.controlled_alexnet,
+             command = pattern.discrim.controlled_alexnet %>% 
+               metrics(truth = animal_type, estimate = .pred, starts_with("outcome")) %>% 
+               calc_perm_pval_general(perms = perm_pattern.discrim.controlled_alexnet)
+  ),
+  tar_target(coefs.discrim.sim_looming,
+             command = right_join(encoding.decoding_loom_events.endspike_flynet.only, 
+                                  bold.looming.controlled, 
+                                  by = "subj_num", 
+                                  suffix = c(".nat", ".cont")) %>% 
+               select(-starts_with("preds")) %>% 
+               # only one coef_sim bc binary means loom and no.loom are yoked
+               mutate(coef.cor = map2_dbl(coefs.nat, coefs.cont, \(x, y) cor(x[,1], y[,1]))) %>% 
+               select(-starts_with("coefs"))
+             ),
+  tar_target(coefs.discrim.sim_object,
+             command = right_join(encoding.decoding_obj_events.raw_alexnet.only, 
+                                  bold.object.controlled, 
+                                  by = "subj_num", 
+                                  suffix = c(".nat", ".cont")) %>% 
+               select(-starts_with("preds")) %>% 
+               mutate(coef.cor_dog = map2_dbl(coefs.nat, coefs.cont, \(x, y) cor(x[,"outcome_dog"], y[,"outcome_dog"])),
+                      coef.cor_frog = map2_dbl(coefs.nat, coefs.cont, \(x, y) cor(x[,"outcome_frog"], y[,"outcome_frog"])),
+                      coef.cor_spider = map2_dbl(coefs.nat, coefs.cont, \(x, y) cor(x[,"outcome_spider"], y[,"outcome_spider"]))) %>% 
+               select(-starts_with("coefs")) %>% 
+               pivot_longer(cols = starts_with("coef.cor"),
+                            names_to = "animal_type",
+                            values_to = "coef.cor",
+                            names_prefix = "coef.cor_")
+             )
 )
 
 ## overall summary stat targets ----
@@ -1013,49 +1171,41 @@ summary_funs_bootstrap <- list(mean = \(x) mean(x, na.rm = TRUE),
                                ci95.lower = \(x) quantile(x, .025, na.rm = TRUE),
                                ci95.upper = \(x) quantile(x, .975, na.rm = TRUE))
 
+summary_funs_across.subs <- list(mean = \(x) mean(x, na.rm = TRUE),
+                                 sd = \(x) sd(x, na.rm = TRUE),
+                                 se = \(x) sd(x, na.rm = TRUE)/sqrt(sum(!is.na(x))))
+
 subtargets_fmri_summary <- list(
-  tar_map(
-    values = tibble(rating_type = c("pleasantness", "arousal", "fear")),
-    tar_target(name = anova_beh,
-               command = beh %>% 
-                 filter(animal_type != "food") %>% 
-                 mutate(animal_type = factor(animal_type, levels = c("dog", "cat", "frog", "spider")),
-                        # effectively order and grand mean center it. 
-                        # this also reduces the number of parameters to fit by not dummy-coding them separately
-                        animal_type_num = as.numeric(animal_type) - 2.5) %>% 
-                 rename(this_rating = paste0("rating_", rating_type)) %>% 
-                 # we can now keep it MAXIMAL and the fit isn't singular bc fewer parameters to be collinear lol
-                 lmerTest::lmer(this_rating ~ has_loom * animal_type_num + (1 + has_loom * animal_type_num | subj_num), data = .) %>% 
-                 anova(ddf = "Kenward-Roger"))
-  ),
   tar_target(name = summary_perf.encoding,
-             command = perf.encoding_combined %>% 
+             command = perf.encoding_flynet.alexnet.rbound %>% 
                group_by(encoding_type) %>% 
                mutate(r2 = perf^2) %>% 
                rename(r = perf) %>% 
-               summarize(across(c(r, r2), summary_funs_bootstrap)) %>% 
-               mutate(r_cohens.d = cohens.d.2(r_mean, r_sd, 0, r_sd),
+               summarize(across(c(r, r2), summary_funs_across.subs)) %>% 
+               mutate(r_ci95.lower = r_mean - 1.96*r_se,
+                      r_ci95.upper = r_mean + 1.96*r_se,
+                      r_cohens.d = cohens.d.2(r_mean, r_sd, 0, r_sd),
                       r2_cohens.d = cohens.d.2(r2_mean, r2_sd, 0, r2_sd))
   ),
   tar_target(name = summary_perf.encoding_alexnet.minus.flynet,
-             command = perf.encoding_combined %>% 
-               filter(encoding_type %in% c("flynet.only", "alexnet.only")) %>% 
+             command = perf.encoding_flynet.alexnet.rbound %>% 
                pivot_wider(names_from = encoding_type, values_from = perf) %>% 
                # a priori we know alexnet is higher so this will get it signed positive. whatever
-               mutate(perf_diff = alexnet.only - flynet.only,
-                      r2_diff = alexnet.only^2 - flynet.only^2) %>% 
+               mutate(perf_diff = alexnet - flynet,
+                      r2_diff = alexnet^2 - flynet^2) %>% 
                summarize(diff_mean = mean(perf_diff),
                          diff_se = sd(perf_diff)/sqrt(length(perf_diff)),
-                         diff_cohens.d = cohens.d(alexnet.only, flynet.only),
+                         diff_cohens.d = cohens.d(alexnet, flynet),
                          r2.diff_mean = mean(r2_diff),
-                         r2.diff_cohens.d = cohens.d(alexnet.only^2, flynet.only^2))
+                         r2.diff_cohens.d = cohens.d(alexnet^2, flynet^2))
   ),
   tar_target(name = summary_pcor.encoding_flynet.alexnet,
              command = pcor.encoding_flynet.alexnet %>% 
-               rename(pcor = estimate, encoding_type = term) %>% 
                group_by(encoding_type) %>% 
-               summarize(across(pcor, c(summary_funs_bootstrap))) %>% 
-               mutate(pcor_cohens.d = cohens.d.2(pcor_mean, pcor_sd, 0, pcor_sd))
+               summarize(across(pcor, summary_funs_across.subs)) %>% 
+               mutate(pcor_ci95.lower = pcor_mean - 1.96*pcor_se,
+                      pcor_ci95.upper = pcor_mean + 1.96*pcor_se,
+                      pcor_cohens.d = cohens.d.2(pcor_mean, pcor_sd, 0, pcor_sd))
              ),
   tar_target(name = encoding.selfreport_alexnet.flynet.cbound,
              command = bind_rows(alexnet = encoding.selfreport_events.raw_alexnet.only,
@@ -1065,10 +1215,46 @@ subtargets_fmri_summary <- list(
                unnest(preds) %>% 
                # Clearly some code generalization failure thing is making this column of all NAs pop up. idk man
                select(-rating)),
+  tar_target(name = encoding.selfreport_coefs,
+             command = bind_rows(looming = encoding.selfreport_events.raw_flynet.only,
+                                 object = encoding.selfreport_events.raw_alexnet.only,
+                                 .id = "encoding_type") %>% 
+               mutate(coef_mean = map_dbl(coefs, mean)) %>% 
+               group_by(rating_type, subj_num, encoding_type) %>% 
+               # final mean is across split-half folds by subject so each subject ends up with 1 mean beta x rating
+               summarize(coef_mean = mean(coef_mean), .groups = "drop")
+             ),
+  tar_target(name = summary_encoding.selfreport_coefs,
+             command = encoding.selfreport_coefs %>% 
+               rename(coef = coef_mean) %>% 
+               group_by(encoding_type, rating_type) %>% 
+               summarize(across(coef, summary_funs_across.subs)) %>% 
+               mutate(coef_cohens.d = cohens.d.2(coef_mean, coef_sd, 0, coef_sd))
+  ),
+  tar_target(name = encoding.selfreport_coef.cor,
+             command = bind_rows(looming = encoding.selfreport_events.raw_flynet.only,
+                                 object = encoding.selfreport_events.raw_alexnet.only,
+                                 .id = "encoding_type") %>% 
+               select(-preds) %>% 
+               group_by(rating_type, subj_num, encoding_type) %>% 
+               mutate(fold_num = 1:n()) %>% 
+               ungroup() %>% 
+               # get it wider in advance of calling cor()
+               pivot_wider(names_from = c(subj_num, fold_num), values_from = coefs, names_prefix = "coefs_") %>% 
+               unnest_longer(starts_with("coefs"), indices_include = FALSE) %>% 
+               nest(.by = c(rating_type, encoding_type), .key = "coefs") %>% 
+               # get the correlation matrix, convert to a triangular half matrix without the diagonal
+               mutate(cormat = map(coefs, \(x) as.dist(cor(x, use = "pairwise.complete.obs", method = "spearman"))),
+                      correlation_mean = map_dbl(cormat, \(x) mean(x, na.rm = TRUE)),
+                      correlation_sd = map_dbl(cormat, \(x) sd(x, na.rm = TRUE)),
+                      correlation_se = map_dbl(cormat, \(x) sd(x, na.rm = TRUE)/sqrt(sum(!is.na(x)))),
+                      correlation_cohens.d = cohens.d.2(correlation_mean, correlation_sd, 0, correlation_sd)) %>% 
+               select(-coefs, -cormat)
+  ),
   tar_rep(name = boots_encoding.selfreport,
           command = encoding.selfreport_alexnet.flynet.cbound %>% 
             nest(.by = c(model_type, rating_type)) %>% 
-            mutate(data = map(data, \(x) group_bootstraps(x, group = subj_num, times = 2000))) %>%
+            mutate(data = map(data, \(x) group_bootstraps(x, group = subj_num, times = 500))) %>%
             unnest(data) %>% 
             mutate(cor.overall = map_dbl(splits, \(x) x %>% 
                                            analysis() %$% 
@@ -1085,7 +1271,7 @@ subtargets_fmri_summary <- list(
                                         cor(.obs, .pred, method = "spearman"),
                                       .progress = "bootstrapping pred-obs correlations FOOD ONLY")) %>% 
             select(-splits),
-          batches = 5,
+          batches = 20,
           reps = 1
   ),
   tar_target(name = summary_encoding.selfreport,
@@ -1103,7 +1289,7 @@ subtargets_fmri_summary <- list(
           command = encoding.selfreport_alexnet.flynet.cbound %>% 
             pivot_wider(names_from = model_type, values_from = .pred) %>% 
             nest(.by = rating_type) %>% 
-            mutate(data = map(data, \(x) group_bootstraps(x, group = subj_num, times = 2000))) %>%
+            mutate(data = map(data, \(x) group_bootstraps(x, group = subj_num, times = 500))) %>%
             unnest(data) %>% 
             mutate(coefs.overall = map(splits, \(x) x %>% 
                                          analysis() %>% 
@@ -1131,7 +1317,7 @@ subtargets_fmri_summary <- list(
                                       broom::tidy(),
                                     .progress = "bootstrapping partial correlations FOOD ONLY")) %>% 
             select(-splits),
-          batches = 5,
+          batches = 20,
           reps = 1
   ),
   tar_target(name = summary_encoding.selfreport_pcor,
@@ -1145,6 +1331,16 @@ subtargets_fmri_summary <- list(
                summarize(across(pcor, summary_funs_bootstrap),
                          .groups = "drop")
                ),
+  tar_target(name = summary_encoding.decoding.selfreport,
+             command =  encoding.decoding.selfreport_obj_events.raw_alexnet.only %>% 
+               filter(outcome != "food") %>% 
+               bind_rows(encoding.decoding.selfreport_loom_events.raw_flynet.only) %>% 
+               mutate(rating_type = case_match(rating_type, "pleasantness" ~ "valence", .default = rating_type),
+                      outcome = fct_relevel(outcome, "loom", "dog", "cat")) %>% 
+               group_by(rating_type, outcome) %>% 
+               summarize(across(correlation, summary_funs_across.subs)) %>% 
+               mutate(correlation_cohens.d = cohens.d.2(correlation_mean, correlation_sd, 0, correlation_sd))
+             ),
   tar_target(name = summary_encoding.discrim.looming,
              command = calc_perm_pval_object_by_pattern(preds = encoding.decoding_loom_events.raw_flynet.only, 
                                                         perms = perm.acc_encoding.decoding_loom_events.raw_flynet.only)
@@ -1154,30 +1350,17 @@ subtargets_fmri_summary <- list(
                                                         perms = perm.acc_by.category_encoding.decoding_loom_events.raw_flynet.only,
                                                         grouping_cols = animal_type)
   ),
-  tar_target(name = summary_encoding.discrim.looming_diff.spider,
-             command = {
-               acc_true <- encoding.decoding_loom_events.raw_flynet.only %>% 
-                 select(-coefs) %>% 
-                 unnest(preds) %>% 
-                 calc_metrics_nested_classprobs(grouping_cols = animal_type) %>% 
-                 filter(.metric == "roc_auc")
-               
-               auroc_diff_spider <- acc_true$.estimate[acc_true$animal_type == "spider"] - mean(acc_true$.estimate[acc_true$animal_type != "spider"])
-               
-               acc_perm <- perm.acc_by.category_encoding.decoding_loom_events.raw_flynet.only %>% 
-                 mutate(auroc_diff_spider_perm = map_dbl(acc_perm, \(x) {
-                   x_filtered <- filter(x, .metric == "roc_auc")
-                   x_filtered$.estimate[x_filtered$animal_type == "spider"] - mean(x_filtered$.estimate[x_filtered$animal_type != "spider"])
-                 }),
-                 auroc_diff_spider_true = auroc_diff_spider) %>% 
-                 summarize(estimate_real = unique(auroc_diff_spider_true),
-                           # need this to report permuted chance levels
-                           estimate_perm = median(auroc_diff_spider_perm),
-                           pval = (sum(auroc_diff_spider_perm > auroc_diff_spider_true)+1)/(n()+1))
-               
-               acc_perm
-             }
-  ),
+  # hopefully replicating a Phil analysis properly
+  tar_target(name = friedman.test_encoding.discrim.looming_by.category,
+             command = encoding.decoding_loom_events.raw_flynet.only %>% 
+               select(-coefs) %>% 
+               unnest(preds) %>% 
+               filter(animal_type != "food") %>% 
+               unnest_wider(.preds) %>% 
+               # important to get these ROC estimates by subj so that subj is the grouping level for the Friedman test
+               group_by(subj_num, animal_type) %>% 
+               roc_auc(truth = .obs, .pred_outcome_loom) %>% 
+               friedman.test(.estimate ~ animal_type | subj_num, data = .)),
   tar_target(name = summary_auroc.cross_encoding.discrim.looming,
              command = left_join(perm_auroc.cross_encoding.discrim.looming, auroc.cross_encoding.discrim.looming, 
                                  by = c("animal_to_guess", ".metric", ".estimator"),
@@ -1215,8 +1398,17 @@ subtargets_fmri_summary <- list(
                summarize(con_mean_2 = mean(con_mean)) %>%
                pivot_wider(names_from = direction, values_from = con_mean_2) %>% 
                mutate(diff = looming - receding) %>% 
-               summarize(across(c(looming, receding, diff), .fns = summary_funs_bootstrap),
-                         diff_cohens.d = cohens.d(looming, receding))
+               summarize(across(c(looming, receding, diff), .fns = summary_funs_across.subs),
+                         diff_cohens.d = cohens.d(looming, receding)) %>% 
+               mutate(looming_ci95.lower = looming_mean - 1.96*looming_se,
+                      looming_ci95.upper = looming_mean + 1.96*looming_se,
+                      receding_ci95.lower = receding_mean - 1.96*receding_se,
+                      receding_ci95.upper = receding_mean + 1.96*receding_se,
+                      diff_ci95.lower = diff_mean - 1.96*diff_se,
+                      diff_ci95.upper = diff_mean + 1.96*diff_se) %>% 
+               pivot_longer(cols = everything(),
+                            names_to = c("direction", ".value"),
+                            names_pattern = "(.*)_(.*)")
              ),
   tar_target(name = summary_pattern.activation.controlled_flynet,
              command = pattern.activation.controlled_flynet %>% 
@@ -1226,23 +1418,20 @@ subtargets_fmri_summary <- list(
                summarize(mean_expression = mean(pattern_expression)) %>%
                pivot_wider(names_from = direction, values_from = mean_expression) %>% 
                mutate(diff = looming - receding) %>% 
-               summarize(across(c(looming, receding, diff), .fns = summary_funs_bootstrap),
+               summarize(across(c(looming, receding, diff), .fns = summary_funs_across.subs),
                          diff_cohens.d = cohens.d(looming, receding))),
-  tar_target(name = summary_pattern.activation.controlled_by.object_flynet,
+  tar_target(name = summary_pattern.activation.controlled_alexnet,
              command = pattern.activation.controlled_flynet %>% 
                select(where(\(x) !is.list(x))) %>%
-               mutate(is_spider = if_else(animal_type == "spider", "spider", "other")) %>% 
-               group_by(is_spider, direction, subj_num) %>% 
-               summarize(mean_expression = mean(pattern_expression)) %>%
-               pivot_wider(names_from = direction, values_from = mean_expression) %>% 
-               mutate(diff = looming - receding) %>% 
-               select(-looming, -receding) %>% 
-               pivot_wider(names_from = is_spider, values_from = diff) %>% 
-               mutate(diff = spider - other) %>% 
-               summarize(across(c(spider, other, diff), .fns = summary_funs_bootstrap),
-                         diff_cohens.d = cohens.d(spider, other))),
+               rename(patexp = pattern_expression) %>% 
+               group_by(animal_type) %>% 
+               # average across animal types within subject
+               summarize(across(patexp, summary_funs_across.subs))
+             ),
   tar_target(generalization.controlled_flynet,
              command = calc_controlled_perf(pattern.activation.controlled_flynet)),
+  tar_target(generalization.controlled_alexnet,
+             command = calc_controlled_perf(pattern.activation.controlled_alexnet)),
   tar_target(name = wb.connectivity_sig.sim,
              command = {
                ceko2022 <- bind_rows(looming = read_csv(sig.sim_ceko2022_flynet.only),
@@ -1334,27 +1523,9 @@ targets_beh <- list(
                mutate(subj_num = as.integer(subj_num)) %>% 
                filter(!is.na(video_id)),
              pattern = map(beh.raw)),
-  # 2025-02-21: currently returning whole tidy RDM (not halved in case you want to reorder when plotting, like with hclust)
-  tar_target(name = rdm.beh,
-             command = beh %>% 
-               select(-has_loom, -animal_type) %>% 
-               expand(subj_num,
-                      nesting(video1 = video_id, 
-                              pleasantness1 = rating_pleasantness, 
-                              arousal1 = rating_arousal, 
-                              fear1 = rating_fear), 
-                      nesting(video2 = video_id, 
-                              pleasantness2 = rating_pleasantness, 
-                              arousal2 = rating_arousal, 
-                              fear2 = rating_fear)) %>% 
-               filter(video1 != video2) %>% 
-               # halve_tidy_rdm(row_col = video1, col_col = video2) %>% 
-               mutate(diff_pleasantness = abs(pleasantness1 - pleasantness2),
-                      diff_arousal = abs(arousal1 - arousal2),
-                      diff_fear = abs(fear1 - fear2)) %>% 
-               select(subj_num, video1, video2, starts_with("diff")),
-             pattern = map(beh)
-  )
+  tar_target(name = beh.all.csv,
+             command = write_csv_target(beh, file = here::here("ignore", "data", "beh", "beh_naturalistic_subs_0001_0048.csv")),
+             format = "file")
 )
 
 ## targets: plots for showing ----
@@ -1366,9 +1537,39 @@ this_theme <- theme_bw(base_size = 16, base_family = "Nimbus Sans") +
   theme(plot.background = element_blank(),
         legend.background = element_blank())
 
+# do this instead of theme_void bc theme_void removes axis labels
+theme_schematic <- theme_minimal(base_size = 16, base_family = "Nimbus Sans") +
+  theme(plot.background = element_blank(),
+        panel.grid = element_blank(),
+        axis.text = element_blank())
+
 theme_brain <- theme_void(base_size = 16) +
   theme(plot.background = element_blank(),
         legend.background = element_blank())
+
+# set some colors for figures later because they may get called in the plotting object (for constant colors)
+colors_ms_old <- c("looming" = "#ff1fbc", "object" = "#28afb0", "conjunction" = "#9467b6") # For old times sake so I don't lose the hex codes
+colors_ms_loom <- "blue2"
+colors_ms_loom.noloom <- c("Looming" = colors_ms_loom, "No looming" = muted(colors_ms_loom, l = 50, c = 30))
+colors_ms_looming.object <- c("looming" = colors_ms_loom, "object" = "red2")
+colors_ms_looming.object.conj <- c("looming > object" = colors_ms_loom, 
+                                   "object > looming" = colors_ms_looming.object[["object"]], # double bracket index to drop old name
+                                   "conjunction" = "magenta2")
+# weirdo hack to get the other end of the Dark2 colors
+# (the direction arg operates after the colors have been chosen and they're always chosen in the main order)
+colors_ms_objs <- pal_brewer(type = "qual", 
+                                     palette = "Dark2", 
+                                     direction = -1)(8)[1:4]
+
+colors_ccn2025_loom <- "#8ace00"
+colors_ccn2025_loom.noloom <- c("Looming" = colors_ccn2025_loom, "No looming" = muted(colors_ccn2025_loom, l = 50, c = 30))
+colors_ccn2025_looming.object <- c("looming" = colors_ccn2025_loom, "object" = "#ff1fbc")
+colors_ccn2025_looming.object.conj <- c("looming > object" = colors_ccn2025_loom, 
+                                   "object > looming" = colors_ccn2025_looming.object[["object"]], # double bracket index to drop old name
+                                   "conjunction" = col_mix(colors_ccn2025_loom, colors_ccn2025_looming.object[["object"]]))
+
+colors_ccn2025_objs <- pal_seq_gradient(low = muted(colors_ccn2025_looming.object["object"]), 
+                                                high = colors_ccn2025_looming.object["object"])(seq(0, 1, length.out = 4))
 
 targets_plots <- list(
   tar_target(plot_ratings,
@@ -1384,14 +1585,52 @@ targets_plots <- list(
                plot_selfreport_ratings() +
                this_theme
   ),
+  tar_target(plot_ratings_by.stim,
+             command =  beh %>% 
+               filter(animal_type != "food") %>% 
+               relabel_cols_for_plot_naturalistic() %>% 
+               plot_selfreport_ratings_by_stim() +
+               this_theme +
+               theme(axis.text.x = element_blank())
+  ),
   tar_target(plot_schematic_unit.activation,
              # since it's a schematic, just use subject 1
              command = list("looming" = activations.flynet_sub.0001,
                             "object" = activations.alexnet_sub.0001) %>% 
-               plot_sample_timecourse_activation() +
+               plot_sample_timecourse_activation_combined() +
                this_theme +
                theme(aspect.ratio = 1/3)
              ),
+  tar_target(plot_schematic_unit.activation_flynet,
+             # since it's a schematic, just use subject 1
+             command = plot_sample_timecourse_activation(activations.flynet_sub.0001,
+                                                         units_to_plot = c(1, 128, 256),
+                                                         line_color = colors_ms_looming.object["looming"]) +
+               theme_schematic +
+               theme(aspect.ratio = 1/4)
+  ),
+  tar_target(plot_schematic_unit.activation_alexnet,
+             command = plot_sample_timecourse_activation(activations.alexnet_sub.0001,
+                                                         units_to_plot = c(1, 500, 1000),
+                                                         line_color = colors_ms_looming.object["object"]) +
+               theme_schematic +
+               theme(aspect.ratio = 1/4)
+  ),
+  tar_target(plot_schematic_unit.activation_1unit_flynet,
+             # since it's a schematic, just use subject 1
+             command = plot_sample_timecourse_activation(activations.flynet_sub.0001,
+                                                         units_to_plot = 100,
+                                                         # this is currently only for the CCN 2025 poster so /shrug
+                                                         line_color = colors_ccn2025_looming.object["looming"]) +
+               theme_schematic
+  ),
+  tar_target(plot_schematic_unit.activation_1unit_alexnet,
+             # since it's a schematic, just use subject 1
+             command = plot_sample_timecourse_activation(activations.alexnet_sub.0001,
+                                                         units_to_plot = 500,
+                                                         line_color = colors_ccn2025_looming.object["object"]) +
+               theme_schematic
+  ),
   tar_target(plot_schematic_encoding.bold.pred,
              command = list("looming" = pred.encoding.xval_flynet.only,
                             "object" = pred.encoding.xval_alexnet.only) %>% 
@@ -1401,9 +1640,24 @@ targets_plots <- list(
                theme(aspect.ratio = 1/3)
   ),
   tar_target(plot_schematic_bold,
-             command = plot_sample_timecourse_bold(bold.masked.sc_sub.0001) +
-               this_theme +
-               theme(aspect.ratio = 1/3)
+             command = plot_sample_timecourse_bold(bold.masked.sc_sub.0001,
+                                                   voxels_to_plot = c(1, 20, 40)) +
+               theme_schematic +
+               theme(aspect.ratio = 1/4)
+  ),
+  tar_target(plot_schematic_bold_1voxel,
+             command = plot_sample_timecourse_bold(bold.masked.sc_sub.0001,
+                                                   voxels_to_plot = 20) +
+               theme_schematic
+  ),
+  tar_target(name = plot_schematic_encoding.betas_flynet,
+             command = plot_sample_encoding_betas(betas.encoding.xval_flynet.only) +
+               theme_schematic
+  ),
+  tar_target(name = plot_schematic_encoding.betas_alexnet,
+             command = plot_sample_encoding_betas(betas.encoding.xval_alexnet.only,
+                                                  viridis_option = "inferno") +
+               theme_schematic
   ),
   tar_target(plot_bold.object_auroc,
              command = plot_auroc_8cat(bold.object_8cat_events.endspike) +
@@ -1414,9 +1668,9 @@ targets_plots <- list(
                this_theme
   ),
   tar_target(plot_encoding.perf_flynet.alexnet,
-             command = plot_encoding_performance(perf.encoding_combined, 
-                                                 encoding_types = c("looming" = "flynet.only", 
-                                                                    "object" = "alexnet.only")) +
+             command = plot_encoding_performance(perf.encoding_flynet.alexnet.rbound, 
+                                                 encoding_types = c("looming" = "flynet", 
+                                                                    "object" = "alexnet")) +
                guides(color = "none") + 
                labs(x = NULL,
                     subtitle = NULL) +
@@ -1436,11 +1690,11 @@ targets_plots <- list(
                mutate(across(c(.obs, .pred), \(x) fct_recode(x,
                                                              "looming" = "loom",
                                                              "no looming" = "no.loom"))) %>% 
-               plot_confusion() +
+               plot_confusion(brewer_option = "Blues") +
                this_theme +
                theme(aspect.ratio = 1)
   ),
-  tar_target(plot_encoding.confusion.looming_flynet_events.raw,
+  tar_target(plot_encoding.confusion.looming_flynet_by.category,
              command = encoding.decoding_loom_events.raw_flynet.only %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
@@ -1448,25 +1702,20 @@ targets_plots <- list(
                mutate(across(c(.obs, .pred), \(x) fct_recode(x,
                                                              "looming" = "loom",
                                                              "no looming" = "no.loom"))) %>% 
-               plot_confusion() +
+               plot_confusion(brewer_option = "Blues",
+                              facet_var_wrap = animal_type) +
                this_theme +
                theme(aspect.ratio = 1)
   ),
-  tar_target(plot_encoding.confusion.object,
-             command = bind_rows(looming = encoding.decoding_obj_events.raw_flynet.only,
-                                 object = encoding.decoding_obj_events.raw_alexnet.only,
-                                 .id = "model_type") %>% 
-               select(-coefs) %>% 
-               unnest(preds) %>% 
-               filter(animal_type != "food") %>% 
-               mutate(across(c(.obs, .pred), \(x) x %>% 
-                               fct_relevel("dog", "cat", "frog", "spider")),
-                      has_loom = if_else(has_loom == 1, "looming", "no looming"),
-                      model_type = paste0(model_type, " encoding")) %>% 
-               plot_confusion(facet_var_row = has_loom,
-                                   facet_var_col = model_type) +
+  tar_target(plot_encoding.auroc.looming_flynet_by.category,
+             command = encoding.decoding_loom_events.raw_flynet.only %>% 
+               plot_auroc(grouping_col = animal_type) +
+               labs(color = "Object type") +
                this_theme +
-               theme(aspect.ratio = 1)
+               theme(aspect.ratio = 1,
+                     legend.position = "inside",
+                     legend.position.inside = c(1,0),
+                     legend.justification.inside = c(1,0))
   ),
   tar_target(plot_encoding.confusion.object_alexnet,
              command = encoding.decoding_obj_events.raw_alexnet.only %>% 
@@ -1475,9 +1724,19 @@ targets_plots <- list(
                filter(animal_type != "food") %>% 
                mutate(across(c(.obs, .pred), \(x)  x %>% 
                                fct_relevel("dog", "cat", "frog", "spider"))) %>% 
-               plot_confusion() +
+               plot_confusion(brewer_option = "Reds") +
                this_theme +
                theme(aspect.ratio = 1)
+  ),
+  tar_target(plot_encoding.auroc.object_alexnet,
+             command = encoding.decoding_obj_events.raw_alexnet.only %>% 
+               plot_auroc(include_overall = FALSE) +
+               labs(color = "Object type") +
+               this_theme +
+               theme(aspect.ratio = 1,
+                     legend.position = "inside",
+                     legend.position.inside = c(1,0),
+                     legend.justification.inside = c(1,0))
   ),
   tar_target(plot_encoding.decoding_8cat_confusion_flynet.alexnet,
              command = bind_rows(looming = encoding.decoding_8cat_events.endspike_flynet.only,
@@ -1498,6 +1757,23 @@ targets_plots <- list(
              command = summary_encoding.selfreport_pcor %>% 
                filter(data_subset == "animal") %>% 
                plot_encoding_selfreport() +
+               this_theme),
+  tar_target(name = plot_encoding.selfreport_coef.means,
+             command = plot_selfreport_statistics(encoding.selfreport_coefs,
+                                                  y_col = coef_mean,
+                                                  y_label = "Mean encoding-self-report β\n(across voxels)",
+                                                  color_col = encoding_type) +
+               labs(color = "Feature type") +
+               this_theme),
+  tar_target(name = plot_encoding.decoding.selfreport,
+             command = encoding.decoding.selfreport_rbound %>% 
+               plot_selfreport_statistics(x_col = outcome,
+                                          y_col = correlation,
+                                          color_col = outcome) +
+               facet_wrap(facets = vars(rating_type), nrow = 1) +
+               guides(color = "none") +
+               labs(x = "Decoding variable",
+                    y = "Correlation\n(decoder to self-report)") +
                this_theme),
   tar_target(name = plot_pattern.activation.controlled_flynet,
              command = plot_encoding_controlled_flynet(pattern.activation.controlled_flynet,
@@ -1599,38 +1875,12 @@ targets_plots <- list(
                # fine to make the colnames non syntactic, they will get pivoted down into a col before they get sent into plot axes
                rename_with(.fn = \(x) str_replace(x, "_", ": "), .cols = -c(model_type, fold_num)) %>% 
                plot_sig_sim() +
-               this_theme +
-               theme(aspect.ratio = 3)
+               this_theme
   )
 )
 
 ### plots for supplemental figures, set off for convenience ----
 targets_plots_supp <- list(
-  tar_target(plot_alexnet.guesses,
-             command = get_alexnet_guesses(activations.alexnet_raw,
-                                           stims %>% 
-                                             select(video, animal_type, looming = has_loom) %>% 
-                                             mutate(looming = if_else(looming == 1, "Looming", "No looming")),
-                                           imagenet_category_labels,
-                                           n_top = 1) %>% 
-               plot_predicted_alexnet_categories(n_top = 1) +
-               this_theme
-  ),
-  tar_target(plot_alexnet.guesses.controlled,
-             command = get_alexnet_guesses(activations.alexnet_raw_controlled,
-                                           metadata_videos_nback %>% 
-                                             select(video = filename, animal_type, looming = direction),
-                                           imagenet_category_labels,
-                                           n_top = 1) %>% 
-               plot_predicted_alexnet_categories(n_top = 1) +
-               this_theme
-  ),
-  tar_target(plot_alexnet.guesses.controlled_framewise,
-             command = plot_predicted_alexnet_categories_framewise(activations.alexnet_raw_controlled,
-                                                                   metadata_videos_nback %>% 
-                                                                     select(video = filename, animal_type, looming = direction),
-                                                                   imagenet_category_labels,
-                                                                   lump_prop = .125)),
   tar_target(plot_auroc.cross_encoding.discrim.looming,
              command = predata_auroc.cross_encoding.discrim.looming %>% 
                roc_curve(truth = animal_value, .pred_outcome_loom) %>% 
@@ -1642,13 +1892,39 @@ targets_plots_supp <- list(
                      legend.position = "inside",
                      legend.position.inside = c(0,1),
                      legend.justification.inside = c(0,1))
-             ),
+  ),
   tar_target(name = plot_auroc.cross_encoding.discrim.object,
              command = predata_auroc.cross_encoding.discrim.object %>% 
                roc_curve(truth = has_loom, .pred_animal) %>% 
                autoplot() +
                labs(title = "classifying looming using object variables",
                     color = "Object category used\nto classify looming") +
+               this_theme +
+               theme(aspect.ratio = 1,
+                     legend.position = "inside",
+                     legend.position.inside = c(0,1),
+                     legend.justification.inside = c(0,1))
+  ),
+  tar_target(name = plot_auroc_looming.discrim.controlled,
+             command = pattern.discrim.controlled_flynet %>% 
+               roc_curve(truth = direction, starts_with("outcome")) %>% 
+               ggplot(aes(x = 1 - specificity, y = sensitivity)) + 
+               geom_abline(slope = 1, intercept = 0, linetype = "dotted") +
+               geom_path() +
+               labs(title = "Classifying controlled looming category",
+                    subtitle = "using naturalistic looming decoder") +
+               this_theme +
+               theme(aspect.ratio = 1)
+  ),
+  tar_target(name = plot_auroc_object.discrim.controlled,
+             command = pattern.discrim.controlled_alexnet %>% 
+               roc_curve(truth = animal_type, starts_with("outcome")) %>% 
+               ggplot(aes(x = 1 - specificity, y = sensitivity, color = .level)) + 
+               geom_abline(slope = 1, intercept = 0, linetype = "dotted") +
+               geom_path() +
+               labs(title = "Classifying controlled object category",
+                    subtitle = "using naturalistic object decoder",
+                    color = "Object type") +
                this_theme +
                theme(aspect.ratio = 1,
                      legend.position = "inside",
@@ -1778,64 +2054,98 @@ targets_figs_sans2025 <- list(
 
 #### manuscript 2025 figure image files ----
 
-colors_ms_loom <- "#ff1fbc"
-colors_ms_loom.noloom <- c("Looming" = colors_ms_loom, "No looming" = scales::muted(colors_ms_loom, l = 50, c = 30))
-colors_ms_looming.object <- c("looming" = colors_ms_loom, "object" = "#28afb0")
-colors_ms_looming.object.conj <- c("looming > object" = colors_ms_loom, 
-                                   "object > looming" = colors_ms_looming.object[["object"]], # double bracket index to drop old name
-                                   "conjunction" = "#9467b6")
-
 targets_figs.ms <- list(
-  tar_target(fig_ms_schematic_unit.activation,
-             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_schematic_activation.png"),
-                              plot = plot_schematic_unit.activation,
-                              width = 1500,
+  tar_target(fig_ms_schematic_unit.activation_flynet,
+             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_schematic_activation_flynet.png"),
+                              plot = plot_schematic_unit.activation_flynet +
+                                labs(x = NULL, y = NULL),
+                              height = 1200,
+                              units = "px",
+                              device = agg_png),
+             format = "file"),
+  tar_target(fig_ms_schematic_unit.activation_alexnet,
+             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_schematic_activation_alexnet.png"),
+                              plot = plot_schematic_unit.activation_alexnet +
+                                labs(x = NULL, y = NULL),
                               height = 1200,
                               units = "px",
                               device = ragg::agg_png),
              format = "file"),
-  tar_target(fig_ms_schematic_encoding.bold.pred,
-             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_schematic_encoding_bold.png"),
-                              plot = plot_schematic_encoding.bold.pred,
-                              width = 1500,
+  tar_target(fig_ms_schematic_bold,
+             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_schematic_bold.png"),
+                              plot = plot_schematic_bold +
+                                labs(x = NULL, y = NULL),
                               height = 1200,
                               units = "px",
                               device = agg_png),
              format = "file"),
-  tar_target(fig_ms_schematic_bold,
-             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_schematic_bold.png"),
-                              plot = plot_schematic_bold,
-                              width = 1500,
-                              height = 700,
+  tar_target(fig_ms_schematic_encoding.betas_flynet,
+             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_schematic_betas_flynet.png"),
+                              plot = plot_schematic_encoding.betas_flynet,
+                              width = 600,
+                              units = "px",
+                              device = agg_png),
+             format = "file"),
+  tar_target(fig_ms_schematic_encoding.betas_alexnet,
+             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_schematic_betas_alexnet.png"),
+                              plot = plot_schematic_encoding.betas_alexnet,
+                              width = 600,
                               units = "px",
                               device = agg_png),
              format = "file"),
   tar_target(fig_ms_encoding.perf_flynet.alexnet,
-             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_encoding_perf_flynet.alexnet_sc.png"),
+             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_encoding_perf_flynet.alexnet_sc.svg"),
                               plot = plot_encoding.perf_flynet.alexnet +
                                 scale_color_manual(values = colors_ms_looming.object) +
                                 # the labels don't need to be angled anymore
-                                guides(x = guide_axis()),
-                              width = 1600,
+                                guides(x = guide_axis()) +
+                                theme(axis.title.y = ggtext::element_markdown()),
+                              width = 1300,
                               height = 1600,
                               units = "px",
-                              device = agg_png),
+                              device = svglite),
              format = "file"),
   tar_target(fig_ms_encoding.confusion.looming_flynet,
              command = ggsave(here::here("ignore", "figs", "ms_naturalistic_encoding.confusion.looming.png"),
                               plot = plot_encoding.confusion.looming_flynet,
-                              width = 1600,
                               height = 900,
                               units = "px",
                               device = agg_png),
              format = "file"),
-  tar_target(fig_ms_encoding.confusion.object_alexnet,
-             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_encoding.confusion.object.png"),
-                              plot = plot_encoding.confusion.object_alexnet,
-                              width = 2000,
-                              height = 1200,
+  tar_target(fig_ms_encoding.confusion.looming_flynet_by.category,
+             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_encoding.confusion.looming_by.category.svg"),
+                              plot = plot_encoding.confusion.looming_flynet_by.category,
+                              height = 1600,
                               units = "px",
-                              device = agg_png),
+                              device = svglite),
+             format = "file"),
+  tar_target(fig_ms_encoding.confusion.object_alexnet,
+             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_encoding.confusion.object.svg"),
+                              plot = plot_encoding.confusion.object_alexnet,
+                              height = 1200,
+                              width = 1400,
+                              units = "px",
+                              device = svglite),
+             format = "file"),
+  tar_target(fig_ms_encoding.auroc.looming_flynet_by.category,
+             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_encoding.auroc.looming_by.category.svg"),
+                              plot = plot_encoding.auroc.looming_flynet_by.category +
+                                # this works bc the plot should have overall as the final level
+                                scale_color_manual(values = c(colors_ms_objs, "black")
+                                ),
+                              height = 1200,
+                              width = 1400,
+                              units = "px",
+                              device = svglite),
+             format = "file"),
+  tar_target(fig_ms_encoding.auroc.object_alexnet,
+             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_encoding.auroc.object.svg"),
+                              plot = plot_encoding.auroc.object_alexnet +
+                                scale_color_manual(values = colors_ms_objs),
+                              height = 1200,
+                              width = 1400,
+                              units = "px",
+                              device = svglite),
              format = "file"),
   tar_target(fig_ms_pattern.activation.controlled_flynet,
              command = ggsave(here::here("ignore", "figs", "ms_naturalistic_pattern.activation.controlled_flynet.png"),
@@ -1851,27 +2161,17 @@ targets_figs.ms <- list(
                               height = 1400,
                               units = "px"),
              format = "file"),
-  tar_target(fig_ms_conn_scatter,
-             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_conn.scatter.png"),
-                              plot = plot_conn_scatter + 
+  tar_target(fig_ms_conn_sig.sim,
+             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_conn.sig.sim.svg"),
+                              plot = plot_conn_sig.sim + 
                                 scale_color_manual(values = colors_ms_looming.object, na.translate = FALSE) +
                                 theme(legend.position = "inside",
                                       legend.position.inside = c(1,1),
                                       legend.justification.inside = c(1,1)),
-                              width = 2400,
-                              height = 2400,
-                              units = "px"),
-             format = "file"),
-  tar_target(fig_ms_conn_sig.sim,
-             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_conn.sig.sim.png"),
-                              plot = plot_conn_sig.sim + 
-                                scale_color_manual(values = colors_ms_looming.object, na.translate = FALSE) +
-                                theme(legend.position = "inside",
-                                      legend.position.inside = c(0,1),
-                                      legend.justification.inside = c(0,1)),
-                              width = 2400,
-                              height = 2400,
-                              units = "px"),
+                              width = 3200,
+                              height = 1800,
+                              units = "px",
+                              device = svglite),
              format = "file"),
   tar_target(name = fig_ms_ratings,
              command = ggsave(here::here("ignore", "figs", "ms_naturalistic_ratings.png"),
@@ -1885,29 +2185,15 @@ targets_figs.ms <- list(
                               height = 1200,
                               units = "px"),
              format = "file"),
-  tar_target(fig_ms_encoding.selfreport.pcor,
-             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_encoding_selfreport_pcor.png"),
-                              plot = plot_encoding.selfreport_flynet.alexnet_pcor +
-                                scale_color_manual(values = colors_ms_looming.object),
-                              width = 1800,
-                              height = 800,
-                              units = "px"),
-             format = "file"),
-  tar_target(fig_ms_encoding.selfreport.combined,
-             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_encoding_selfreport_combined.png"),
-                              plot = plot_encoding.selfreport_combined +
-                                scale_color_manual(values = colors_ms_looming.object) +
-                                scale_fill_manual(values = colors_ms_looming.object),
-                              width = 2500,
+  tar_target(fig_ms_encoding.decoding.selfreport,
+             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_encoding_decoding_selfreport.svg"),
+                              plot = plot_encoding.decoding.selfreport +
+                                scale_color_manual(values = c(colors_ms_loom, colors_ms_objs)
+                                ),
+                              width = 3200,
                               height = 1200,
-                              units = "px"),
-             format = "file"),
-  tar_target(fig_ms_beta.comparison_object.selfreport,
-             command = ggsave(here::here("ignore", "figs", "ms_naturalistic_beta.comparison_object.selfreport.png"),
-                              plot = plot_beta.comparison_object.selfreport,
-                              width = 4200,
-                              height = 3600,
-                              units = "px"),
+                              units = "px",
+                              device = svglite),
              format = "file"),
   tar_target(name = fig_ms_statmaps_pre.mricrogl,
              command = vctrs::vec_c(flynet = statmap.wb.model.connectivity_flynet.only,
@@ -1915,10 +2201,45 @@ targets_figs.ms <- list(
                                     conjunction = statmap.wb.model.connectivity_flynet.conj.alexnet,
                                     difference = statmap.wb.model.connectivity_flynet.minus.alexnet,
                                     labels = wb.atlas_selected.rois),
-             format = "file")
+             format = "file"),
+  tar_target(fig_ms_plotgrid2,
+             command = {
+               grid1 <- plot_grid(plot_encoding.confusion.looming_flynet_by.category, 
+                                  plot_encoding.auroc.looming_flynet_by.category, 
+                                  plot_encoding.confusion.object_alexnet, 
+                                  plot_encoding.auroc.object_alexnet, 
+                                  align = "h",
+                                  axis = "lr",
+                                  nrow = 2,
+                                  labels = "auto",
+                                  label_fontfamily = "Nimbus Sans")
+               grid2 <- plot_grid(grid1, 
+                                  plot_encoding.decoding.selfreport +
+                                    scale_color_manual(values = colors_ms_looming.object), 
+                                  nrow = 2, 
+                                  rel_heights = c(2,1), 
+                                  labels = c("", "e"),
+                                  label_fontfamily = "Nimbus Sans")
+               out_path <- here::here("ignore", "figs", "ms_naturalistic_plotgrid2.png")
+               save_plot(out_path,
+                         plot = grid2,
+                         nrow = 3,
+                         base_asp = 1)
+               
+               out_path
+             })
 )
 
 targets_figs.ms.supp <- list(
+  tar_target(name = fig_ms.supp_ratings_by.stim,
+             command = ggsave(here::here("ignore", "figs", "ms.supp_naturalistic_ratings_by.stim.png"),
+                              plot = plot_ratings_by.stim +
+                                scale_color_manual(values = colors_ms_objs),
+                              width = 2400,
+                              height = 2400,
+                              units = "px",
+                              device = agg_png),
+             format = "file"),
   tar_target(fig_ms.supp_encoding.confusion.looming,
              command = ggsave(here::here("ignore", "figs", "ms.supp_naturalistic_encoding.confusion.looming.png"),
                               plot = plot_encoding.confusion.looming,
@@ -1942,35 +2263,31 @@ targets_figs.ms.supp <- list(
              format = "file"),
   tar_target(fig_ms.supp_auroc.cross_encoding.discrim.looming,
              command = ggsave(here::here("ignore", "figs", "ms.supp_naturalistic_auroc.cross_encoding.discrim.looming.png"),
-                              plot = plot_auroc.cross_encoding.discrim.looming,
+                              plot = plot_auroc.cross_encoding.discrim.looming +
+                                scale_color_manual(values = colors_ms_objs),
                               width = 2000,
                               height = 2000,
                               units = "px")),
   tar_target(fig_ms.supp_auroc.cross_encoding.discrim.object,
              command = ggsave(here::here("ignore", "figs", "ms.supp_naturalistic_auroc.cross_encoding.discrim.object.png"),
-                              plot = plot_auroc.cross_encoding.discrim.object,
+                              plot = plot_auroc.cross_encoding.discrim.object +
+                                scale_color_manual(values = colors_ms_objs),
                               width = 2000,
-                              height = 2000,
-                              units = "px")),
-  tar_target(fig_ms.supp_alexnet.guesses,
-             command = ggsave(here::here("ignore", "figs", "ms.supp_alexnet.guesses.png"),
-                              plot = plot_alexnet.guesses +
-                                scale_fill_manual(values = colors_ms_loom.noloom) +
-                                theme(legend.position = "inside",
-                                      legend.position.inside = c(0,1),
-                                      legend.justification.inside = c(0,1)),
-                              width = 1200,
                               height = 2000,
                               units = "px"),
              format = "file"),
-  tar_target(fig_ms.supp_alexnet.guesses_controlled,
-             command = ggsave(here::here("ignore", "figs", "ms.supp_alexnet.guesses_controlled.png"),
-                              plot = plot_alexnet.guesses_controlled +
-                                scale_fill_manual(values = colors_ms_loom.noloom) +
-                                theme(legend.position = "inside",
-                                      legend.position.inside = c(0,1),
-                                      legend.justification.inside = c(0,1)),
-                              width = 1200,
+  tar_target(fig_ms.supp_auroc_looming.discrim.controlled,
+             command = ggsave(here::here("ignore", "figs", "ms.supp_naturalistic_auroc_looming.discrim.controlled.png"),
+                              plot = plot_auroc_looming.discrim.controlled,
+                              width = 2000,
+                              height = 2000,
+                              units = "px"),
+             format = "file"),
+  tar_target(fig_ms.supp_auroc_object.discrim.controlled,
+             command = ggsave(here::here("ignore", "figs", "ms.supp_naturalistic_auroc_object.discrim.controlled.png"),
+                              plot = plot_auroc_object.discrim.controlled +
+                                scale_color_manual(values = colors_ms_objs[c(1,3,4)]),
+                              width = 2000,
                               height = 2000,
                               units = "px"),
              format = "file"),
@@ -1985,13 +2302,162 @@ targets_figs.ms.supp <- list(
                               height = 1200,
                               units = "px"),
              format = "file"),
-  tar_target(fig_ms.supp_beta.comparison_object.selfreport,
-             command = ggsave(here::here("ignore", "figs", "ms.supp_naturalistic_beta.comparison_object.selfreport.png"),
-                              plot = plot_beta.comparison_object.selfreport,
-                              width = 4200,
-                              height = 2000,
+  tar_target(fig_ms.supp_conn_scatter,
+             command = ggsave(here::here("ignore", "figs", "ms.supp_naturalistic_conn.scatter.png"),
+                              plot = plot_conn_scatter + 
+                                scale_color_manual(values = colors_ms_looming.object, na.translate = FALSE) +
+                                theme(legend.position = "inside",
+                                      legend.position.inside = c(1,1),
+                                      legend.justification.inside = c(1,1)),
+                              width = 2400,
+                              height = 2400,
                               units = "px"),
              format = "file")
+)
+
+#### CCN 2025 figure image files ----
+
+targets_figs_ccn2025 <- list(
+  tar_target(fig_ccn2025_schematic_unit.activation_flynet,
+             command = ggsave(here::here("ignore", "figs", "ccn2025_schematic_activation_flynet.png"),
+                              plot = plot_schematic_unit.activation_1unit_flynet +
+                                labs(x = NULL, y = NULL),
+                              height = 400,
+                              width = 1200,
+                              units = "px",
+                              device = agg_png),
+             format = "file"),
+  tar_target(fig_ccn2025_schematic_unit.activation_alexnet,
+             command = ggsave(here::here("ignore", "figs", "ccn2025_schematic_activation_alexnet.png"),
+                              plot = plot_schematic_unit.activation_1unit_alexnet +
+                                labs(x = NULL, y = NULL),
+                              height = 400,
+                              width = 1200,
+                              units = "px",
+                              device = agg_png),
+             format = "file"),
+  tar_target(fig_ccn2025_schematic_bold,
+             command = ggsave(here::here("ignore", "figs", "ccn2025_schematic_bold.png"),
+                              plot = plot_schematic_bold_1voxel +
+                                labs(x = NULL, y = NULL),
+                              height = 400,
+                              width = 1200,
+                              units = "px",
+                              device = agg_png),
+             format = "file"),
+  tar_target(name = fig_ccn2025_ratings,
+             command = ggsave(here::here("ignore", "figs", "ccn2025_ratings.png"),
+                              plot = plot_ratings_nofood +
+                                scale_color_manual(values = colors_ccn2025_loom.noloom) +
+                                guides(x = guide_axis(angle = 30)) +
+                                labs(subtitle = NULL,
+                                     x = NULL) +
+                                theme(legend.position = "inside", 
+                                      legend.position.inside = c(1,1), 
+                                      legend.justification = c(1,1)),
+                              width = 1800,
+                              height = 1100,
+                              units = "px",
+                              device = agg_png),
+             format = "file"),
+  tar_target(fig_ccn2025_encoding.perf_flynet.alexnet,
+             command = ggsave(here::here("ignore", "figs", "ccn2025_encoding_perf.png"),
+                              plot = plot_encoding.perf_flynet.alexnet +
+                                scale_color_manual(values = colors_ccn2025_looming.object) +
+                                # the labels don't need to be angled anymore
+                                guides(x = guide_axis()) +
+                                theme(axis.title.y = ggtext::element_markdown()),
+                              width = 1000,
+                              height = 1600,
+                              units = "px",
+                              device = agg_png),
+             format = "file"),
+  tar_target(fig_ccn2025_encoding.confusion.looming_flynet_by.category,
+             command = ggsave(here::here("ignore", "figs", "ccn2025_encoding.confusion.looming_by.category.png"),
+                              plot = plot_encoding.confusion.looming_flynet_by.category +
+                                guides(x = guide_axis(angle = 30)) +
+                                scale_fill_gradient(low = "white", high = colors_ccn2025_loom),
+                              height = 1300,
+                              width = 1500,
+                              units = "px",
+                              device = agg_png),
+             format = "file"),
+  tar_target(fig_ccn2025_encoding.confusion.object_alexnet,
+             command = ggsave(here::here("ignore", "figs", "ccn2025_encoding.confusion.object.png"),
+                              plot = plot_encoding.confusion.object_alexnet +
+                                scale_fill_gradient(low = "white", high = colors_ccn2025_looming.object["object"]),
+                              height = 1200,
+                              width = 1400,
+                              units = "px",
+                              device = agg_png),
+             format = "file"),
+  tar_target(fig_ccn2025_encoding.decoding.selfreport,
+             command = ggsave(here::here("ignore", "figs", "ccn2025_encoding_decoding_selfreport.png"),
+                              plot = plot_encoding.decoding.selfreport +
+                                scale_color_manual(values = c(colors_ccn2025_loom, colors_ccn2025_objs)
+                                ),
+                              width = 2800,
+                              height = 1000,
+                              units = "px",
+                              device = agg_png),
+             format = "file"),
+  tar_target(fig_ccn2025_conn_sig.sim,
+             command = ggsave(here::here("ignore", "figs", "ccn2025_conn.sig.sim.png"),
+                              plot = plot_conn_sig.sim + 
+                                # before the flip for readability. this adjusts the signatures axis which will go on y
+                                scale_x_discrete(limits = rev) + 
+                                coord_flip() +
+                                guides(x = guide_axis()) +
+                                scale_color_manual(values = colors_ccn2025_looming.object, na.translate = FALSE) +
+                                theme(legend.position = "inside",
+                                      legend.position.inside = c(1,0),
+                                      legend.justification.inside = c(1,0)),
+                              width = 2800,
+                              height = 1400,
+                              units = "px",
+                              device = agg_png),
+             format = "file"),
+  tar_target(name = statmap.wb.model.connectivity_alexnet.gt.flynet,
+             command = {
+               tvals_flynet <- vroom::vroom(wb.model.connectivity_flynet.only, 
+                                            delim = ",", 
+                                            col_names = FALSE, 
+                                            col_types = c(.default = "d")) %>% 
+                 summarize_tvals_pre_statmap() %>% 
+                 threshold_tvals_pre_statmap(threshold_p = .01)
+               
+               tvals_alexnet <- vroom::vroom(wb.model.connectivity_alexnet.only, 
+                                             delim = ",", 
+                                             col_names = FALSE, 
+                                             col_types = c(.default = "d")) %>% 
+                 summarize_tvals_pre_statmap() %>% 
+                 threshold_tvals_pre_statmap(threshold_p = .01)
+               
+               # there are many voxels where the difference is supra-threshold non-zero but the higher value isn't supra-threshold on its own
+               # so for the diff statmap, zero out voxels ahead of time where the higher value on its own doesn't exceed 0
+               # threshold_tvals_pre_statmap() retains only significant voxels as nonzero so this also has the effect 
+               # of only keeping a - b diff voxels where a is significantly positive
+               tvals_diff <- tvals.wb.model.connectivity_flynet.minus.alexnet
+               tvals_diff[tvals_diff > 0 & tvals_flynet <= 0] <- 0
+               tvals_diff[tvals_diff < 0 & tvals_alexnet <= 0] <- 0
+               # now flip it to get alexnet > flynet and then drop out all the flynet > alexnet voxels
+               tvals_diff <- -tvals_diff
+               tvals_diff[tvals_diff < 0] <- 0
+               
+               canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb_conn_alexnet_gt_flynet_sc.nii")),
+                                          roi = NULL,
+                                          values = tvals_diff,
+                                          threshold_p = .01,
+                                          script = matlab_export_statmap)
+             },
+             format = "file")
+)
+
+## targets: final report docs!!! ----
+
+targets_rmd <- list(
+  tar_render(rmd_ms_stats, here::here("code", "R", "fmri_naturalistic_ms_report.rmd")),
+  tar_render(rmd_ms_supp, here::here("code", "R", "fmri_naturalistic_ms_supp.Rmd"))
 )
 
 ## final combo call ----
@@ -2015,8 +2481,9 @@ list(
   targets_plots,
   targets_plots_supp,
   targets_figs,
-  targets_figs_sans2025,
+  # targets_figs_sans2025, # removed from tracking now that conference has passed (and other code has been updated around)
+  targets_figs_ccn2025,
   targets_figs.ms,
   targets_figs.ms.supp,
-  tar_render(rmd_ms_stats, here::here("code", "R", "fmri_naturalistic_ms_report.rmd"))
+  targets_rmd
 )

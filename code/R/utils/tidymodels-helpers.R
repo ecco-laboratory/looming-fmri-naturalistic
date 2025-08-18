@@ -172,12 +172,20 @@ fit_model_2level <- function (in_data,
     add_model(parsnip_model) %>% 
     add_recipe(this_recipe)
   
-  out <- in_data %>% 
-    nest(.by = all_of(nest_vars)) %>% 
-    mutate(cv = purrr::map(data, \(x) vfold_cv(x, v = n_folds_within_nest))) %>% 
-    unnest(cv) %>% 
-    mutate(model = purrr::map(splits, \(x) fit(this_workflow, data = training(x)), .progress = "fitting models"),
-           preds = purrr::map2(model, splits, \(x, y) get_preds_one_fold(x, y, x_prefix = x_prefix, y_prefix = y_var, rm_x = rm_x), .progress = "getting predictions"))
+  if (n_folds_within_nest > 1) {
+    out <- in_data %>% 
+      nest(.by = all_of(nest_vars)) %>% 
+      mutate(cv = purrr::map(data, \(x) vfold_cv(x, v = n_folds_within_nest))) %>% 
+      unnest(cv) %>% 
+      mutate(model = purrr::map(splits, \(x) fit(this_workflow, data = training(x)), .progress = "fitting models"),
+             preds = purrr::map2(model, splits, \(x, y) get_preds_one_fold(x, y, x_prefix = x_prefix, y_prefix = y_var, rm_x = rm_x), .progress = "getting predictions"))
+  } else {
+    # operate directly on nested data as opposed to rsplit objects if "1-fold" (no hold out testing data)
+    out <- in_data %>% 
+      nest(.by = all_of(nest_vars)) %>% 
+      mutate(model = purrr::map(data, \(x) fit(this_workflow, data = x), .progress = "fitting models"),
+             preds = purrr::map2(model, data, \(x, y) get_preds_one_fold(x, y, x_prefix = x_prefix, y_prefix = y_var, rm_x = rm_x), .progress = "getting predictions"))
+  }
   
   return (out)
 }
@@ -209,7 +217,7 @@ calc_xval_perf <- function (df_preds, grouping_cols = NULL, classprob_prefix = "
                 across(c(.estimate_mean, .estimate_se), unique),
                 # need this to report permuted chance levels
                 .estimate_perm = median(.estimate_perm)) %>% 
-      select(!!grouping_cols, .estimate_mean, .estimate_se, .estimate_perm, pval)
+      select(.metric, !!grouping_cols, .estimate_mean, .estimate_se, .estimate_perm, pval)
       
     
     return (out)
@@ -221,30 +229,39 @@ calc_xval_perf <- function (df_preds, grouping_cols = NULL, classprob_prefix = "
 permute_xval_classification <- function (df_preds, n_perms, grouping_cols = NULL, classprob_prefix = ".pred_outcome") {
   grouping_cols <- enquo(grouping_cols)
   
-  # expects by-subj nested xval output to permute within subject
+  # expects unnested post-xval output, will nest it back in to permute within subject
   out <- df_preds %>% 
-    # IF THIS IS CALLED WITHIN A TAR_REP, MULTIPLY N_PERMS BY THE NUMBER OF BATCHES FOR THE TOTAL OVERALL NUMBER OF ITERATIONS
-    mutate(splits_nested = map(preds, \(x) permutations(x, .obs, times = n_perms), 
-                               .progress = "permuting")) %>% 
-    select(-preds) %>% 
-    # now get splits out of the nest and into a column
-    unnest(splits_nested) %>% 
-    # reconstruct across-subjects permuted datasets. requires pulling full data out of the splits objects
-    mutate(perm_preds = map(splits, \(x) analysis(x), 
-                            .progress = "unnesting within subject")) %>% 
-    select(-splits) %>% 
-    unnest(perm_preds) %>% 
-    # this puts them back into "datasets" by permutation iteration where each iteration has all subjects
-    nest(.by = id)
+    permute_data_by_subject(permute_col = .obs, n_perms = n_perms)
   
   out %<>% 
     # now compute permuted accuracy & AUROC metrics
-    mutate(acc_perm = map(data, \(x) calc_metrics_nested_classprobs(x, 
+    mutate(acc_perm = map(perm_data, \(x) calc_metrics_nested_classprobs(x, 
                                                                     grouping_cols = !!grouping_cols,
                                                                     classprob_prefix = classprob_prefix), 
                           .progress = "calculating perm-wise acc")) %>% 
     # drop the actual permuted data for space saving
-    select(-data)
+    select(-perm_data)
+  
+  return (out)
+}
+
+permute_data_by_subject <- function (in_data, permute_col, n_perms) {
+  permute_col <- enquo(permute_col)
+  
+  out <- in_data %>% 
+    # next, by subject so that blocks will only be permuted within subject
+    nest(.by = subj_num) %>%
+    # IF THIS IS CALLED WITHIN A TAR_REP, MULTIPLY N_PERMS BY THE NUMBER OF BATCHES FOR THE TOTAL OVERALL NUMBER OF ITERATIONS
+    mutate(data = map(data, \(x) permutations(x, !!permute_col, times = n_perms), 
+                      .progress = "permuting")) %>% 
+    # now get splits out of the nest and into a column
+    unnest(data) %>% 
+    # reconstruct across-subjects permuted datasets. requires pulling full data out of the splits objects
+    mutate(perm_data = map(splits, \(x) analysis(x), 
+                           .progress = "extracting perm dfs")) %>% 
+    select(-splits) %>% 
+    unnest(perm_data) %>% 
+    nest(.by = id, .key = "perm_data")
   
   return (out)
 }

@@ -1,7 +1,15 @@
 controlled:
-  store: ignore/_targets/controlled/
-  script: code/_targets_controlled.R
+  store: ignore/_targets/controlled_1/
+  script: code/_targets_controlled_1.R
   
 naturalistic:
+  store: ignore/_targets/naturalistic_1/
+  script: code/_targets_naturalistic_1.R
+  
+naturalistic_ms1:
   store: ignore/_targets/naturalistic/
   script: code/_targets_naturalistic.R
+
+pilot7t:
+  store: ignore/_targets/pilot7t/
+  script: code/_targets_pilot7t.R

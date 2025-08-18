@@ -56,6 +56,31 @@ summarize_tvals_pre_statmap <- function (in_data_1, in_data_2 = NULL, fun_compar
 
 ### testing naturalistic encoding model-predicted pattern on controlled task betas ----
 
+calc_controlled_pattern_discrim_headless <- function (patterns_controlled,
+                                                      target_betas_discrim) {
+  
+  patterns <- patterns_controlled %>% 
+    nest(.by = c(subj_num, animal_type, direction), .key = "pattern") %>% 
+    mutate(pattern = map(pattern, unlist)) %>% 
+    left_join(target_betas_discrim %>% 
+                select(subj_num, betas_discrim = coefs),
+              by = "subj_num") %>% 
+    mutate(discrim_pred = map2(pattern, betas_discrim, \(x, y) {
+      out <- c(x %*% y)
+      names(out) <- colnames(y)
+      # drop cat and food if there, if not (aka if looming) leave it
+      if ("outcome_dog" %in% colnames(y)) {
+        out <- out[c("outcome_dog", "outcome_frog", "outcome_spider")]
+      }
+      return(out)
+    }),
+    .pred = map_chr(discrim_pred, \(x) str_split_i(names(which.max(x)), "_", 2))) %>% 
+    select(subj_num, animal_type, direction, discrim_pred, .pred) %>% 
+    unnest_wider(discrim_pred)
+  
+  return (patterns)
+}
+
 calc_controlled_pattern_discrim <- function (patterns_controlled,
                                              path_activations_controlled,
                                              metadata_controlled,
@@ -73,11 +98,14 @@ calc_controlled_pattern_discrim <- function (patterns_controlled,
     mutate(discrim_pred = map2(pattern_pred, betas_discrim, \(x, y) {
       out <- c(x %*% y)
       names(out) <- colnames(y)
-      return(out[c("outcome_dog", "outcome_frog", "outcome_spider")])
+      # drop cat and food if there, if not (aka if looming) leave it
+      if ("outcome_dog" %in% colnames(y)) {
+        out <- out[c("outcome_dog", "outcome_frog", "outcome_spider")]
+      }
+      return(out)
       }),
-      animal_type_pred = map_chr(discrim_pred, \(x) str_split_i(names(which.max(x)), "_", 2)),
-      across(starts_with("animal_type"), \(x) factor(x, levels = c("dog", "frog", "spider")))) %>% 
-    select(subj_num, animal_type, direction, discrim_pred, animal_type_pred) %>% 
+      .pred = map_chr(discrim_pred, \(x) str_split_i(names(which.max(x)), "_", 2))) %>% 
+    select(subj_num, animal_type, direction, discrim_pred, .pred) %>% 
     unnest_wider(discrim_pred)
   
   return (patterns)
@@ -260,6 +288,16 @@ calc_perm_pval_object_by_pattern <- function (preds, perms, grouping_cols = NULL
     unnest(preds) %>% 
     calc_metrics_nested_classprobs(grouping_cols = !!grouping_cols)
   
+  out <- calc_perm_pval_general(acc_true = acc_true,
+                                perms = perms,
+                                grouping_cols = !!grouping_cols)
+  
+  return (out)
+}
+
+calc_perm_pval_general <- function (acc_true, perms, grouping_cols = NULL) {
+  grouping_cols <- enquo(grouping_cols)
+  
   # don't need this until a few lines down but do it before I quote the argument
   join_by_cols <- c(".metric", ".estimator")
   if (!quo_is_null(grouping_cols)) join_by_cols <- c(join_by_cols, quo_name(grouping_cols))
@@ -418,18 +456,61 @@ fit_object_by_pattern <- function (path_pattern_allsubs,
   return (out)
 }
 
+fit_selfreport_by_decoding <- function (preds_allsubs,
+                                        beh_allsubs) {
+  
+  ratings_by_decoding <- preds_allsubs %>% 
+    select(-coefs) %>% 
+    unnest(preds) %>% 
+    unnest_longer(.preds, values_to = ".pred_value", indices_to = "outcome") %>% 
+    mutate(outcome = str_remove(outcome, ".pred_outcome_")) %>% 
+    group_by(subj_num, video_id, has_loom, animal_type, outcome) %>% 
+    summarize(.pred_value = mean(.pred_value), .groups = "drop") %>% 
+    left_join(beh_allsubs, by = c("subj_num", "video_id", "has_loom", "animal_type")) %>% 
+    pivot_longer(cols = starts_with("rating"),
+                 names_to = "rating_type",
+                 values_to = "rating",
+                 names_prefix = "rating_")
+  
+  # fit_model_2level fits models within subject, with split-half (2-fold) validation by default
+  # this has 2 benefits here when fitting self-report
+  # 1. keeping each model within-subject avoids attempting to model between-subject variance, which may be high with self-report
+  # 2. it also avoids fitting models using data across cross-validation folds of the encoding model that produced the encoding patterns
+  out <- fit_model_2level(in_data = ratings_by_decoding,
+                          nest_vars = c("subj_num", "rating_type", "outcome"),
+                          x_prefix = ".pred_value",
+                          y_var = "rating",
+                          additional_recipe_steps = \(x) step_filter(x, animal_type != "food", skip = TRUE),
+                          parsnip_model = parsnip::linear_reg(mode = "regression", engine = "lm"),
+                          n_folds_within_nest = 1,
+                          rm_x = TRUE) %>% 
+    # need coefs and r2 so we can extract the original sign of r (since squaring is always positive)
+    mutate(coefs = map(model, \(x) extract_fit_engine(x) %>% 
+                          pluck("coefficients"),
+                        .progress = "extracting coefs"),
+           r2 = map_dbl(model, \(x) extract_fit_engine(x) %>% 
+                      summary() %>% 
+                      pluck("r.squared"),
+                       .progress = "extracting R^2"),
+           # multiply by the sign of the slope coef to get the proper correlation sign lost by squaring
+           correlation = map2_dbl(r2, coefs, \(x, y) sqrt(x) * sign(y[-1]))) %>% 
+    select(subj_num, rating_type, outcome, correlation)
+  
+  return (out)
+}
+
 fit_selfreport_by_pattern <- function (path_pattern_allsubs,
                                        events_allsubs,
                                        beh_allsubs) {
   
   ratings_by_encoding <- get_ratings_by_encoding_space(path_pattern_allsubs,
-                                                       left_join(events_allsubs,
-                                                                 beh_allsubs, 
-                                                                 by = c("subj_num", "video_id"))) %>% 
+                                                       events_allsubs,
+                                                       beh_allsubs) %>% 
     pivot_longer(cols = starts_with("rating"),
                  names_to = "rating_type",
                  values_to = "rating",
                  names_prefix = "rating_")
+
   
   # fit_model_2level fits models within subject, with split-half (2-fold) validation by default
   # this has 2 benefits here when fitting self-report
@@ -447,13 +528,14 @@ fit_selfreport_by_pattern <- function (path_pattern_allsubs,
                           # we need more regularization here to reduce the fluctuation added by removing training data
                           parsnip_model = set_engine(parsnip::pls(mode = "regression", num_comp = 20), engine = "plsr", method = "simpls"),
                           rm_x = TRUE) %>% 
-    mutate(coefs = map(model, \(x) pluck(extract_fit_engine(x), "coefficients"))) %>% 
+    mutate(coefs = map(model, \(x) extract_pls_workflow_coefs(x),
+                       .progress = "extracting coefs")) %>% 
     select(subj_num, rating_type, coefs, preds)
   
   return (out)
 }
 
-get_ratings_by_encoding_space <- function (path_pred_allsubs, events_allsubs, path_pred_allsubs_2 = NULL) {
+get_ratings_by_encoding_space <- function (path_pred_allsubs, events_allsubs, beh_allsubs, path_pred_allsubs_2 = NULL) {
   
   pred_encoding <- load_encoding_pred_allsubs(path_pred_allsubs)
   
@@ -464,14 +546,18 @@ get_ratings_by_encoding_space <- function (path_pred_allsubs, events_allsubs, pa
                 suffix = c(".1", ".2"))
   }
   
-  out <- pred_encoding %>% 
-    left_join(events_allsubs, by = c("subj_num", "tr_num")) %>% 
+  out <- convert_trwise_to_trialwise(pred_encoding, events_allsubs) %>% 
+    left_join(beh_allsubs, by = c("subj_num", "video_id"))
+  
+  return (out)
+}
+
+convert_trwise_to_trialwise <- function (data_trwise, data_trialwise, col_prefix = "voxel") {
+  out <- data_trwise %>% 
+    left_join(data_trialwise, by = c("subj_num", "tr_num")) %>% 
     filter(!is.na(video_id), video_id != "fixation") %>% 
     group_by(subj_num, video_id) %>% 
-    mutate(across(c(starts_with("rating"), animal_type, has_loom), \(x) x[1])) %>% 
-    # many fewer lines of code to keep voxel and average over TR because voxel was already on the column
-    group_by(subj_num, fold_num, video_id, pick(starts_with("rating")), animal_type, has_loom) %>% 
-    summarize(across(starts_with("voxel"), mean), .groups = "drop")
+    summarize(across(starts_with(col_prefix), mean), .groups = "drop")
   
   return (out)
 }
@@ -495,7 +581,7 @@ calc_pcor_encoding_on_bold <- function (path_bold_mat_all_subs,
   
   encoding_preds_2 <- load_encoding_pred_allsubs(path_encoding_preds_2)
   
-  coefs_xval <- encoding_preds_1 %>% 
+  pcor_xval <- encoding_preds_1 %>% 
     full_join(encoding_preds_2, by = c("subj_num", "tr_num"), suffix = paste0("_", encoding_names_str)) %>% 
     full_join(bold, by = c("subj_num", "tr_num")) %>% 
     pivot_longer(cols = starts_with("voxel"),
@@ -505,17 +591,23 @@ calc_pcor_encoding_on_bold <- function (path_bold_mat_all_subs,
     # nest by HELD-OUT SUBJECT. currently treats voxels x timepoints as exchangeable within each single-subject lm
     nest(preds = -subj_num) %>% 
     # this is the workhorse
-    # interpret the betas as partial correlations because all the Xs and Ys are z-scored
-    # by a quick test outside, it's not an exact match, but it's suuuuper close. on the order of .005 correlation units different.
-    mutate(coefs = map(preds, \(x) lm(scale(obs) ~ scale(!!encoding_name_1) + scale(!!encoding_name_2), data = x) %>% 
-                         broom::tidy())) %>% 
+    # 2025-07-28: per this giant stack overflow post https://stats.stackexchange.com/questions/76815/multiple-regression-or-partial-correlation-coefficient-and-relations-between-th
+    # scaled multiple regression betas will be very close to but not exactly the same as partial correlations
+    # because it's only residualizing X2 out of Y, not out of X1 and X2
+    # the conversion formula requires pulling residuals anyway, so we'll do it the long way /shrug
+    mutate(pcor_1 = map_dbl(preds, \(x) calc_pcor(x, y_col = "obs", x_col = encoding_names_str[1], covar_cols = encoding_names_str[2])),
+           pcor_2 = map_dbl(preds, \(x) calc_pcor(x, y_col = "obs", x_col = encoding_names_str[2], covar_cols = encoding_names_str[1]))) %>% 
     select(-preds) %>% 
-    unnest(coefs) %>% 
-    filter(term != "(Intercept)") %>% 
-    # strip out the "scale()" from the predictor names
-    mutate(term = str_sub(term, start = 7L, end = -2L))
+    pivot_longer(cols = starts_with("pcor"),
+                 names_to = "encoding_type",
+                 values_to = "pcor",
+                 names_prefix = "pcor_") %>% 
+    # odd but skinny way of patching the encoding names back in after pivoted back down
+    # without having to program on the wide col names
+    mutate(encoding_type = as.numeric(encoding_type),
+           encoding_type = encoding_names_str[encoding_type])
   
-  return (coefs_xval)
+  return (pcor_xval)
 }
 
 ## functions to read in and preprocess matlab-created file targets ----

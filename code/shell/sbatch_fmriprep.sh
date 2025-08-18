@@ -1,7 +1,6 @@
 #!/bin/bash
 #
 #SBATCH --account=default
-#SBATCH --exclude=node3,gpu2
 #SBATCH --time=7-00:00:00
 #SBATCH --mem=48G
 #SBATCH --partition week-long  # Queue names you can submit to

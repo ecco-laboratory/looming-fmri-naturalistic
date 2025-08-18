@@ -1,0 +1,128 @@
+---
+title: "Supplemental Information"
+subtitle: "A midbrain basis for emotion: Representations of naturalistic looming threat in the human superior colliculus"
+output:
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE)
+
+require(targets)
+require(tidyverse)
+require(rlang)
+require(knitr)
+
+target_store <- here::here("ignore", "_targets", "naturalistic")
+
+chop_alexnet_guesses <- function (guesses) {
+  guesses %>% 
+    group_by(animal_type, looming) %>% 
+    count(guess_specific) %>% 
+    arrange(animal_type, looming, desc(n)) %>% 
+    slice_head(n = 10) %>% 
+    select(-n) %>% 
+    chop(guess_specific) %>% 
+    mutate(guess_specific_chr = map_chr(guess_specific, \(x) paste(x, collapse = "; "))) %>% 
+    select(-guess_specific) %>% 
+    rename(`Object category` = animal_type,
+           `Motion` = looming,
+           `Most frequent AlexNet guesses` = guess_specific_chr)
+}
+```
+
+# 
+
+```{r}
+tar_read(stims, store = target_store) %>% 
+  mutate(has_loom = case_match(has_loom, 0 ~ "no looming", 1 ~ "looming"),
+         animal_type = fct_relevel(animal_type, "dog", "cat", "frog", "spider")) %>% 
+  group_by(has_loom, animal_type) %>% 
+  summarize(`Number of videos` = n(), `Mean duration` = mean(duration), `Duration SD` = sd(duration)) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3))) %>% 
+  arrange(animal_type, has_loom) %>% 
+  select(animal_type, has_loom, everything()) %>% 
+  rename(Motion = has_loom, `Object category` = animal_type) %>% 
+  kable()
+```
+
+**Table S1.** Experiment 1 stimulus information. Number of videos per condition and duration mean & standard deviation are shown for each motion x object condition.
+
+# 
+
+```{r}
+tar_read(alexnet.guesses_videos, store = target_store) %>% 
+  filter(animal_type != "food") %>% 
+  mutate(animal_type = fct_relevel(animal_type, "dog", "cat")) %>% 
+  chop_alexnet_guesses() %>% 
+  kable()
+```
+
+**Table S2.** AlexNet guesses on Experiment 1 stimuli. The 10 most frequent top-1 guesses aggregated across all frames of each motion x object condition are shown. Exemplar guesses are semantically consistent with video object categories.
+
+# 
+
+```{r supp-figure-1}
+knitr::include_graphics(tar_read(fig_ms.supp_auroc.cross_encoding.discrim.looming, store = target_store), rel_path = FALSE)
+```
+
+**Figure S1.** Object classification performance when using looming decoder values. Looming classification performance (AUROC) when using object decoder values. The looming decoder variable is not able to classify any object category above chance.
+
+# 
+
+```{r supp-figure-2}
+knitr::include_graphics(tar_read(fig_ms.supp_auroc.cross_encoding.discrim.object, store = target_store), rel_path = FALSE)
+```
+
+**Figure S2.** Looming classification performance (AUROC) when using object decoder values. No object decoder variables are able to classify looming above chance.
+
+# 
+
+```{r supp-figure-3}
+knitr::include_graphics(tar_read(fig_ms.supp_conn_scatter, store = target_store), rel_path = FALSE)
+```
+
+**Figure S3.** Superior colliculus connectivity with specific regions of interest. Regions of interest are defined using the component atlases of the CANLab Combined Atlas. Subcortical regions are as defined in the combined atlas. Cortical regions were defined by combining relevant parcels from the HCP MMP 1.0 atlas, which defines all cortical ROIs in the combined atlas. Cortical regions: ventral occipitotemporal cortex (defined as parcels “FFC” and “VVC”), the intraparietal cortex (defined as parcels “IPS1”, “MIP”, “LIPv”, “LIPd”, and “VIP”), the frontal eye field (defined as parcel “FEF”), and the inferior frontal gyrus (defined as parcels “IFJa”, “IFJp”, “44”, and “45”). 
+
+# 
+
+```{r supp-figure-4}
+knitr::include_graphics(tar_read(fig_ms_ratings, store = target_store), rel_path = FALSE)
+```
+
+**Figure S4.** Participant-level self-report ratings. Ratings are shown for valence, arousal, and fear in each panel. Ratings are consistent with differences in subjective aversiveness with respect to looming (color) and object category (x-axis). Faint lines are shown by subject, and summary points and error bars are shown for mean ± 1 SEM (_N_ = 42).
+
+# 
+
+```{r supp-figure-5}
+knitr::include_graphics(tar_read(fig_ms.supp_ratings_by.stim, store = target_store), rel_path = FALSE)
+```
+
+**Figure S5.** Item-level self-report ratings. Items are shown in each panel by their across-subjects valence, arousal, and fear ratings. Points are shaped by motion and colored by object category. Items show patterns with respect to looming and object category consistent with differences in subjective aversiveness. Points and error bars are shown for mean ± 1 SEM (_N_ = 42).
+
+# 
+
+```{r supp-table-3}
+tar_read(summary_encoding.decoding.selfreport, store = target_store) %>% 
+  arrange(rating_type, outcome) %>% 
+  mutate(across(where(is.numeric), \(x) signif(x, digits = 3))) %>% 
+  rename(`Self-report rating` = rating_type,
+         `Decoding variable` = outcome,
+         `Mean r` = correlation_mean,
+         `SD` = correlation_sd,
+         `SEM` = correlation_se,
+         `Cohen's d` = correlation_cohens.d) %>% 
+  kable()
+```
+
+**Table S3.** Correlations between trial-level looming and object decoding variables and self-report ratings. Table columns are organized by the self-report rating and the decoding variable being correlated. All results are computed over _N_ = 42.
+
+#
+
+```{r supp-table-4}
+tar_read(alexnet.guesses_controlled, store = target_store) %>% 
+  chop_alexnet_guesses() %>% 
+  kable()
+```
+
+**Table S4.** AlexNet guesses on Experiment 2 stimuli. The 10 most frequent top-1 guesses aggregated across all frames of each motion x object condition are shown. Exemplar guesses are semantically consistent with video object categories.
