@@ -1,7 +1,6 @@
 #!/bin/bash
 #
 #SBATCH --account=default
-#SBATCH --exclude=node3
 #SBATCH --time=0-24:00:00
 #SBATCH --mem=24G
 #SBATCH --partition day-long  # Queue names you can submit to
