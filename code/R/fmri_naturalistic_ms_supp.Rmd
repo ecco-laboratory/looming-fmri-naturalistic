@@ -126,3 +126,7 @@ tar_read(alexnet.guesses_controlled, store = target_store) %>%
 ```
 
 **Table S4.** AlexNet guesses on Experiment 2 stimuli. The 10 most frequent top-1 guesses aggregated across all frames of each motion x object condition are shown. Exemplar guesses are semantically consistent with video object categories.
+
+# ITEMS TO BE SORTED FOR REVISION RESPONSE
+
+
