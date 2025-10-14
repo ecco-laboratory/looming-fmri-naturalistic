@@ -1,13 +1,17 @@
 # This script is designed to be regular-sourced in the targets pipelines
 # to make all of the variables available in the tar_make environment
 
-store_flynet.looming <- "/home/mthieu/Repos/emonet-py/ignore/_targets"
-ratings_ck2017 <- tar_read(ratings_ck2017, store = file.path(store_flynet.looming, "subjective"))
-weights_flynet <- tar_read(weights_flynet, store = file.path(store_flynet.looming, "subjective"))
-py_calc_flynet_activations <- tar_read(py_calc_flynet_activations, store = file.path(store_flynet.looming, "subjective"))
-py_make_looming_video <- tar_read(py_make_looming_video, store = file.path(store_flynet.looming, "eyeblink"))
-
 targets_scripts <- list(
+  tar_target(
+    name = weights_flynet,
+    command = here::here("ignore", "MegaFlyNet256.pt"),
+    format = "file"
+  ),
+  tar_target(
+    name = py_make_looming_video,
+    command = here::here("code", "python", "make_looming_video.py"),
+    format = "file"
+  ),
   tar_target(
     name = py_get_video_metadata,
     command = here::here("code", "python", "get_video_metadata.py"),
@@ -21,6 +25,11 @@ targets_scripts <- list(
   tar_target(
     name = py_calc_alexnet_activations,
     command = here::here("code", "python", "calc_alexnet_activations.py"),
+    format = "file"
+  ),
+  tar_target(
+    name = py_calc_flynet_activations,
+    command = here::here("code", "python", "calc_flynet_activations.py"),
     format = "file"
   ),
   tar_target(
@@ -58,7 +67,7 @@ targets_scripts <- list(
     command = {
       matlab_select_atlas_subset
       here::here("code", "matlab", "mask_fmri_data_canlabtools.m")
-      },
+    },
     format = "file"
   ),
   tar_target(
@@ -66,7 +75,7 @@ targets_scripts <- list(
     command = {
       matlab_select_atlas_subset
       here::here("code", "matlab", "parcellate_betas_canlabtools.m")
-      },
+    },
     format = "file"
   ),
   tar_target(
@@ -85,7 +94,7 @@ targets_scripts <- list(
       matlab_load_encoding_activations
       matlab_load_bold_for_pls
       here::here("code", "matlab", "fit_pls_canlabtools.m")
-      },
+    },
     format = "file"
   ),
   tar_target(
@@ -121,7 +130,7 @@ targets_scripts <- list(
     command = {
       matlab_select_atlas_subset
       here::here("code", "matlab", "parcellate_avg_fmri_data_canlabtools.m")
-      },
+    },
     format = "file"
   ),
   tar_target(
