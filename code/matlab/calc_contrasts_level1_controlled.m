@@ -1,5 +1,5 @@
 function contrasts = calc_contrasts_level1_controlled(condition_names)
-    contrasts = cell(1, 16);
+    contrasts = cell(1, 24);
     contrasts{1}.tcon.name = 'attend_animal';                                                                                                            
     contrasts{1}.tcon.weights = contains(condition_names, "animal") - contains(condition_names, "hemifield");
     contrasts{2}.tcon.name = 'dog';
@@ -37,4 +37,28 @@ function contrasts = calc_contrasts_level1_controlled(condition_names)
     % to use for subsequent percent signal change calculations
     contrasts{16}.tcon.name = 'meansignal';
     contrasts{16}.tcon.weights = double(contains(condition_names, "constant"));
+    
+    %% baseline for all of the attend to object category trials
+    contrasts{17}.tcon.name = 'attendObject_baseline';
+    contrasts{17}.tcon.weights = double(contains(condition_names, "animal"));
+    %% baseline for all of the attend to spatial location trials
+    contrasts{18}.tcon.name = 'attendLocation_baseline';
+    contrasts{18}.tcon.weights = double(contains(condition_names, "location"));
+
+    %% 
+    contrasts{19}.tcon.name = 'attendObject_dog_baseline';
+    contrasts{19}.tcon.weights = double(contains(condition_names, "animal") & contains(condition_names, "dog"));
+    contrasts{20}.tcon.name = 'attendObject_frog_baseline';
+    contrasts{20}.tcon.weights = double(contains(condition_names, "animal") & contains(condition_names, "frog"));
+    contrasts{21}.tcon.name = 'attendObject_spider_baseline';
+    contrasts{21}.tcon.weights = double(contains(condition_names, "animal") & contains(condition_names, "spider"));
+
+    %%
+    contrasts{22}.tcon.name = 'attendLocation_dog_baseline';
+    contrasts{22}.tcon.weights = double(contains(condition_names, "location") & contains(condition_names, "dog"));
+    contrasts{23}.tcon.name = 'attendLocation_frog_baseline';
+    contrasts{23}.tcon.weights = double(contains(condition_names, "location") & contains(condition_names, "frog"));
+    contrasts{24}.tcon.name = 'attendLocation_spider_baseline';
+    contrasts{24}.tcon.weights = double(contains(condition_names, "location") & contains(condition_names, "spider"));
+
 end
