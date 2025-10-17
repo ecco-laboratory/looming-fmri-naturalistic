@@ -8,6 +8,13 @@ get_raw_confounds <- function (subject, task, run) {
                     paste(subject, task, run, "desc-confounds_timeseries.tsv", sep = "_")))
 }
 
+# bidsmreye outputs multiple files per run, this seems like the easiest to plug and play into this pipeline
+# rows by TR per usual. can probably ignore the timestamp column and just use the x and y coordinate cols
+get_raw_bidsmreye <- function (subject, task, run) {
+  inject(here::here(!!!path_here_fmri, "derivatives", "deepmreye", "bidsmreye", subject, "func",
+                    paste(subject, task, run, "space-MNI152NLin2009cAsym_desc-1to6_eyetrack.tsv", sep = "_")))
+}
+
 # this gets for all fmriprepped subjects, for the QC targets kept separate (to include subjects excluded from main processing)
 get_all_raw_confounds <- function (task = "controlled") {
   list.files(inject(here::here(!!!path_here_derivatives)), 
@@ -91,6 +98,21 @@ read_confounds <- function (file_path, tr_duration, disdaq_duration) {
   start_tr <- (disdaq_duration %/% tr_duration) + 1
   
   out <- confounds %>% 
+    # get the TR programmatically pls!!!
+    # remove the first 8 seconds of data
+    slice(start_tr:n())
+  
+  return (out)
+}
+
+read_bidsmreye <- function (file_path, tr_duration, disdaq_duration) {
+  bidsmreye <- read_tsv(file_path)
+  n_trs <- nrow(bidsmreye)
+  # nb: int division makes it work even if the TR does not divide evenly into 8
+  # int div is floor div so this may start at a TR slightly before 8 s has elapsed
+  start_tr <- (disdaq_duration %/% tr_duration) + 1
+  
+  out <- bidsmreye %>% 
     # get the TR programmatically pls!!!
     # remove the first 8 seconds of data
     slice(start_tr:n())
