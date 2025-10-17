@@ -355,11 +355,12 @@ permute_acc_object_by_pattern <- function (preds, n_perms, acc_grouping_cols = N
   return (out)
 }
 
+# WORKHORSE DECODER FUNCTION
 fit_object_by_pattern <- function (path_pattern_allsubs, 
                                    events_allsubs, 
                                    n_trs_kept_per_run, 
                                    path_pattern_allsubs_2 = NULL,
-                                   pattern_type = c("bold", "encoding"), 
+                                   pattern_type = c("bold", "encoding", "eyetrack"), 
                                    outcome_categories = c("obj", "loom", "obj.loom"),
                                    n_pls_comp = 5,
                                    xval = TRUE) {
@@ -375,6 +376,8 @@ fit_object_by_pattern <- function (path_pattern_allsubs,
       load_bold_mat_allsubs() %>% 
       select(-fold_num)
   
+    pls_x_prefix <- "voxel"
+    
   } else if (pattern_type == "encoding") {
     
     timecourses <- load_encoding_pred_allsubs(path_pattern_allsubs)
@@ -385,6 +388,14 @@ fit_object_by_pattern <- function (path_pattern_allsubs,
                   by = c("subj_num", "tr_num"),
                   suffix = c(".1", ".2"))
     }
+    
+    pls_x_prefix <- "voxel"
+    
+  } else if (pattern_type == "eyetrack") {
+    timecourses <- path_pattern_allsubs %>% 
+      load_eyetrack_allsubs()
+    
+    pls_x_prefix <- "coordinate"
   }
   
   out <- timecourses %>% 
@@ -421,7 +432,7 @@ fit_object_by_pattern <- function (path_pattern_allsubs,
   if (!xval) {
     out %<>% 
       # fit_pls_single returns a list object
-      fit_pls_single(x_prefix = "voxel",
+      fit_pls_single(x_prefix = pls_x_prefix,
                      y_prefix = "outcome",
                      num_comp = n_pls_comp,
                      additional_recipe_steps = recipe_steps_plsda,
@@ -436,8 +447,7 @@ fit_object_by_pattern <- function (path_pattern_allsubs,
   }
   
   out %<>%
-    # x_prefix = "voxel" works for both bold and encoding (assuming encoding is always by space)
-    fit_model_xval(x_prefix = "voxel",
+    fit_model_xval(x_prefix = pls_x_prefix,
                    y_prefix = "outcome",
                    parsnip_model = set_engine(parsnip::pls(mode = "regression", num_comp = n_pls_comp), engine = "plsr", method = "simpls"),
                    additional_recipe_steps = recipe_steps_plsda,
@@ -641,6 +651,18 @@ load_encoding_pred_allsubs <- function (path_pred_allsubs) {
                   subtract(1L) %>% 
                   paste0("voxel.", .), 
                 starts_with("X")) %>% 
+    group_by(subj_num) %>% 
+    mutate(tr_num = 1:n()) %>% 
+    ungroup()
+  
+  return (out)
+}
+
+## functions to read in and preprocess other file targets ----
+
+load_eyetrack_allsubs <- function (eyetrack_allsubs) {
+  out <- eyetrack_allsubs %>% 
+    rename(coordinate.x = x_coordinate, coordinate.y = y_coordinate) %>% 
     group_by(subj_num) %>% 
     mutate(tr_num = 1:n()) %>% 
     ungroup()
