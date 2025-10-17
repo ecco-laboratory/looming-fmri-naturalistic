@@ -163,8 +163,19 @@ cython_debug/
 .Rproj.user
 .Rhistory
 
+# Rmd knit products that we don't need to track
+*.docx
+*.html
+*.tex
+
 # Matlab user files
 *.asv
 
+# VSCode user files
+*.vscode*
+
 # My big folder of stimuli and data and shit that shouldn't get tracked
 ignore/
+
+# the GBVS toolbox which has been copied in
+code/matlab/gbvs
