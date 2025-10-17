@@ -372,27 +372,27 @@ subtargets_encoding.timecourses_combine <- list(
               targets_fmri_by.run[["activations.onoff"]])
 )
 
-subtargets_bold.masked <- list(
-  tar_target(name = bold.masked.sc,
+tar_map_rois <- tibble(roi_name = c("sc", "thal", "midb", "antcblm"), 
+                       # There are multiple canlab2018 ROIs with Midb as a prefix... all of them together should be ok? Some appear to be dorsal/ventral?
+                       # The anterior cerebellum ROIs are originally from the SUIT atlas
+                       # selected by moi to correspond approximately to the ROI selected by Wall et al. 2009 as a physically nearby but functionally unrelated control region to SC
+                       roi_canlabtools = c("Bstem_SC", "Thal_", "Bstem_Midb", "Cblm_I_IV"))
+
+subtargets_bold.masked <- tar_map(
+  values = tar_map_rois,
+  tar_target(name = bold.masked,
              command = canlabtools_mask_fmri_data(out_path = here::here("ignore", "data", "canlabtools", 
-                                                                        sprintf("%s_%s_region-sc_bold.mat", subject, task_bids)),
+                                                                        sprintf("%s_%s_region-%s_bold.mat", subject, task_bids, roi_name)),
                                                   tr_duration = task_defaults_list$tr_duration,
                                                   trs_to_use = 1:task_defaults_list$n_trs_kept + (task_defaults_list$disdaq_duration %/% task_defaults_list$tr_duration),
                                                   bolds = bold.smoothed,
                                                   confounds = confounds.prespm,
-                                                  roi = "Bstem_SC",
+                                                  roi = roi_canlabtools,
                                                   script = matlab_mask_fmri_data),
              format = "file"),
-  tar_target(name = bold.masked.amyg,
-             command = canlabtools_mask_fmri_data(out_path = here::here("ignore", "data", "canlabtools", 
-                                                                        sprintf("%s_%s_region-amyg_bold.mat", subject, task_bids)),
-                                                  tr_duration = task_defaults_list$tr_duration,
-                                                  trs_to_use = 1:task_defaults_list$n_trs_kept + (task_defaults_list$disdaq_duration %/% task_defaults_list$tr_duration),
-                                                  bolds = bold.smoothed,
-                                                  confounds = confounds.prespm,
-                                                  roi = "Amyg",
-                                                  script = matlab_mask_fmri_data),
-             format = "file")
+  names = roi_name,
+  # to fit my "legacy" naming of bold.masked.sc
+  delimiter = "."
 )
 
 targets_fmri_by.subject <- make_targets_fmri_by.subject(participants,
@@ -426,8 +426,10 @@ subtargets_fmri_across.subject <- list(
   # the components of these are already one per subject so we don't need to keep them as list
   tar_combine(name = bold.masked.sc_all.subs,
               targets_fmri_by.subject[["bold.masked.sc"]]),
-  tar_combine(name = bold.masked.amyg_all.subs,
-              targets_fmri_by.subject[["bold.masked.amyg"]]),
+  tar_combine(name = bold.masked.thal_all.subs,
+              targets_fmri_by.subject[["bold.masked.thal"]]),
+  tar_combine(name = bold.masked.midb_all.subs,
+              targets_fmri_by.subject[["bold.masked.midb"]]),
   tar_combine(name = events.timecourse_all.subs,
               targets_fmri_by.subject[["events.timecourse"]],
               command = bind_rows(!!!.x, .id = "target_name") %>% 
@@ -441,7 +443,40 @@ subtargets_fmri_across.subject <- list(
              command = events.timecourse_all.subs %>% 
                nest(events = -c(subj_num, fold_num)) %>% 
                mutate(events = map(events, \(x) relabel_timecourse_endspike(x))) %>% 
-               unnest(events))
+               unnest(events)),
+  tar_combine(name = bidsmreye.coords_all.subs,
+              targets_fmri_by.subject[["bidsmreye"]],
+              # these come in as a nested list of lists (subject, run)
+              # so the paths need to be read in accordingly
+              command = list(!!!.x) %>% 
+                # first read in run data (discarding first few vols), then bind rows over run
+                map(\(x) bind_rows(
+                  map(x, \(y) read_bidsmreye(y, 
+                                             tr_duration = task_defaults_list$tr_duration,
+                                             disdaq_duration = task_defaults_list$disdaq_duration))
+                )) %>% 
+                # then bind rows over subject and keep the names
+                bind_rows(.id = "target_name") %>% 
+                mutate(subj_num = as.integer(str_sub(target_name, start = -4L))) %>% 
+                select(-target_name, -timestamp)
+  ),
+  # similar to above target but instead calculate the diffs of the coord columns to get movement information
+  tar_combine(name = bidsmreye.movement_all.subs,
+              targets_fmri_by.subject[["bidsmreye"]],
+              command = list(!!!.x) %>% 
+                map(\(x) bind_rows(
+                  map(x, \(y) read_bidsmreye(y, 
+                                             tr_duration = task_defaults_list$tr_duration,
+                                             disdaq_duration = task_defaults_list$disdaq_duration) %>% 
+                        mutate(x_coordinate = x_coordinate - lag(x_coordinate, 1),
+                               y_coordinate = y_coordinate - lag(y_coordinate, 1)) 
+                        )
+                )) %>% 
+                # then bind rows over subject and keep the names
+                bind_rows(.id = "target_name") %>% 
+                mutate(subj_num = as.integer(str_sub(target_name, start = -4L))) %>% 
+                select(-target_name, -timestamp)
+  )
 )
 
 ### canlabtools-based group analyses so help me god ----
@@ -455,7 +490,7 @@ subtargets_fmri_canlabtools_by.subject <- tar_map(
   # that depend on the all-subjects pred.encoding.xval target
   # to reduce memory load so that only one subject's whole-brain BOLD needs to be loaded in at a time to calculate the correlations
   tar_target(name = wb.model.connectivity,
-             command = canlabtools_fit_model_connectivity(out_path = here::here("ignore", "outputs", sprintf("%s_naturalistic_wb.conn.%s_sc.csv", subject, encoding_type_full)),
+             command = canlabtools_fit_model_connectivity(out_path = here::here("ignore", "outputs", sprintf("%s_naturalistic_wb.conn.%s_%s.csv", subject, encoding_type_full, roi_name)),
                                                           tr_duration = task_defaults_list$tr_duration,
                                                           trs_to_use = 1:task_defaults_list$n_trs_kept + (task_defaults_list$disdaq_duration %/% task_defaults_list$tr_duration),
                                                           bolds = bolds,
@@ -474,18 +509,23 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
                    "onoff", "only",
                    "flynet", "onoff",
                    "alexnet", "onoff") %>% 
+    # 2025-10-13: Cell Reports revisions mapping the encoding model analysis to more ROIs again
+    expand(nesting(encoding_type1, encoding_type2), 
+           # the anterior cerebellum ROI is ONLY for generating bold.masked!!! Not for fitting encoding models!!!
+           filter(tar_map_rois, roi_name != "antcblm")) %>% 
     mutate(encoding_type_full = paste(encoding_type1, encoding_type2, sep = "."),
            activations1_all.subs = syms(sprintf("activations.%s_all.subs", encoding_type1)),
            activations2_all.subs = syms(sprintf("activations.%s_all.subs", encoding_type2)),
            activations2_all.subs = map_if(activations2_all.subs, 
                                           encoding_type2 == "only",
-                                          \(x) NA)),
+                                          \(x) NA),
+           bold_all.subs = syms(sprintf("bold.masked.%s_all.subs", roi_name))),
   tar_target(name = encoding.xval,
-             command = canlabtools_fit_encoding_pls(out_path_perf = here::here("ignore", "outputs", sprintf("naturalistic_perf.%s_sc.csv", encoding_type_full)),
-                                                    out_path_pred = here::here("ignore", "outputs", sprintf("naturalistic_pred.%s_sc.csv", encoding_type_full)),
-                                                    out_path_betas = here::here("ignore", "outputs", sprintf("naturalistic_betas.%s_sc.csv", encoding_type_full)),
+             command = canlabtools_fit_encoding_pls(out_path_perf = here::here("ignore", "outputs", sprintf("naturalistic_perf.%s_%s.csv", encoding_type_full, roi_name)),
+                                                    out_path_pred = here::here("ignore", "outputs", sprintf("naturalistic_pred.%s_%s.csv", encoding_type_full, roi_name)),
+                                                    out_path_betas = here::here("ignore", "outputs", sprintf("naturalistic_betas.%s_%s.csv", encoding_type_full, roi_name)),
                                                     tr_duration = task_defaults_list$tr_duration,
-                                                    bolds = bold.masked.sc_all.subs,
+                                                    bolds = bold_all.subs,
                                                     # by default fits one encoding model at a time
                                                     activations1 = activations1_all.subs,
                                                     activations2 = activations2_all.subs,
@@ -503,9 +543,9 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
              command = encoding.xval[grepl("betas", encoding.xval)],
              format = "file"),
   tar_target(name = betas.encoding.overall,
-             command = canlabtools_fit_encoding_pls_no.xval(out_path_betas = here::here("ignore", "outputs", sprintf("naturalistic_betas.noxval.%s_sc.csv", encoding_type_full)),
+             command = canlabtools_fit_encoding_pls_no.xval(out_path_betas = here::here("ignore", "outputs", sprintf("naturalistic_betas.noxval.%s_%s.csv", encoding_type_full)),
                                                             tr_duration = task_defaults_list$tr_duration,
-                                                            bolds = bold.masked.sc_all.subs,
+                                                            bolds = bold_all.subs,
                                                             # by default fits one encoding model at a time
                                                             activations1 = activations1_all.subs,
                                                             activations2 = activations2_all.subs,
@@ -518,8 +558,8 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
                # canlabtools fmri_data write method appears to forcibly change periods in file names to underscores
                # so we have to feed in something that won't get changed so that the actual output path matches the expected one from here
                this_encoding_label <- str_replace(encoding_type_full, "\\.", "_")
-               canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_perf_%s_sc.nii", this_encoding_label)),
-                                          roi = "Bstem_SC",
+               canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_perf_%s_%s.nii", this_encoding_label, roi_name)),
+                                          roi = roi_canlabtools,
                                           values = summarize_tvals_pre_statmap(perf.encoding.xval),
                                           script = matlab_export_statmap)
              },
@@ -558,17 +598,6 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
             batches = 50,
             reps = 1
     ),
-    tar_target(name = encoding.decoding.nosplit,
-               command = pred.encoding.xval %>%
-                 fit_object_by_pattern(events_allsubs = left_join(events_target,
-                                                                  beh, 
-                                                                  by = c("subj_num", "video_id")),
-                                       n_trs_kept_per_run = task_defaults_list$n_trs_kept,
-                                       pattern_type = "encoding",
-                                       outcome_categories = outcome_category,
-                                       n_pls_comp = 20,
-                                       xval = FALSE)
-    ),
     tar_target(name = encoding.decoding.selfreport,
                command = fit_selfreport_by_decoding(encoding.decoding, beh)
     ),
@@ -579,41 +608,13 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
                                                  events.timecourse_all.subs,
                                                  beh)
   ),
-  tar_target(name = encoding.selfreport.nosplit,
-             command = pred.encoding.xval %>% 
-               get_ratings_by_encoding_space(left_join(events.timecourse.endspike_all.subs,
-                                                       beh, 
-                                                       by = c("subj_num", "video_id"))) %>% 
-               filter(animal_type != "food") %>% 
-               # SO!!! We need to make sure to avoid train-test leakage from the original encoding model to subsequent readout models.
-               # we can do this by either:
-               # fitting a single overall PLS regression for each of the outcome ratings (I honestly think this is fine. we don't need cross-validated generalization perf)
-               # changing this PLS pipeline so that it gets fit along with the main encoding PLS train-test split (I would really prefer not to do this)
-               pivot_longer(cols = starts_with("rating"),
-                            names_to = "rating_type",
-                            values_to = "rating",
-                            names_prefix = "rating_") %>% 
-               nest(.by = rating_type) %>% 
-               mutate(model = map(data, \(x) {
-                 n_voxels <- sum(grepl("voxel", names(x)))
-                 fit_pls_single(in_data = x,
-                                x_prefix = "voxel",
-                                y_prefix = "rating",
-                                # so that it will be equivalent to multiple regression
-                                num_comp = n_voxels,
-                                rm_x = TRUE) %>% 
-                   pluck("model")
-               })) %>% 
-               mutate(coefs = map(model, \(x) extract_pls_workflow_coefs(x))) %>% 
-               select(rating_type, coefs)
-  ),
   # SEE ABOVE FOR THE DEFINITION OF THE INDIVIDUAL SUBJECT CONNECTIVITY TARGETS
   subtargets_fmri_canlabtools_by.subject,
   tar_combine(name = wb.model.connectivity,
               subtargets_fmri_canlabtools_by.subject[["wb.model.connectivity"]],
               # output as file in case Phil wants to read them in himself
               command = {
-                out_path <- here::here("ignore", "outputs", sprintf("naturalistic_wb.conn.%s_sc.csv", encoding_type_full))
+                out_path <- here::here("ignore", "outputs", sprintf("naturalistic_wb.conn.%s_%s.csv", encoding_type_full, roi_name))
                 
                 connectivity <- vctrs::vec_c(!!!.x) %>% 
                   map(\(x) read_csv(x, col_names = FALSE)) %>% 
@@ -644,7 +645,7 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
                # canlabtools fmri_data write method appears to forcibly change periods in file names to underscores
                # so we have to feed in something that won't get changed so that the actual output path matches the expected one from here
                this_encoding_label <- str_replace(encoding_type_full, "\\.", "_")
-               canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb_conn_%s_sc.nii", this_encoding_label)),
+               canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb_conn_%s_%s.nii", this_encoding_label, roi_name)),
                                           roi = NULL,
                                           values = tvals.wb.model.connectivity,
                                           threshold_p = .01,
@@ -653,7 +654,7 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
              },
              format = "file"),
   tar_target(name = parcels.wb.connectivity,
-             command = canlabtools_parcellate_avg(out_path = here::here("ignore", "outputs", sprintf("naturalistic_parcel_conn_%s_sc.csv", encoding_type_full)),
+             command = canlabtools_parcellate_avg(out_path = here::here("ignore", "outputs", sprintf("naturalistic_parcel_conn_%s_%s.csv", encoding_type_full, roi_name)),
                                                   path_connectivity_allsubs_1 = wb.model.connectivity,
                                                   script = matlab_parcellate_avg),
              format = "file"),
@@ -661,14 +662,14 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
     values = tibble(sig_name = c("ceko2022", "kragel2015", "zhou2021"),
                     sig_folder = c("2021_Ceko_MPA2_multiaversive", "2015_Kragel_emotionClassificationBPLS", "2021_Zhou_Subjective_Fear")),
     tar_target(name = sig.sim,
-               command = canlabtools_apply_wb_signature(out_path = here::here("ignore", "outputs", sprintf("naturalistic_sigsim-%s_%s_sc.csv", sig_name, encoding_type_full)),
+               command = canlabtools_apply_wb_signature(out_path = here::here("ignore", "outputs", sprintf("naturalistic_sigsim-%s_%s_%s.csv", sig_name, encoding_type_full, roi_name)),
                                                         fmri_data = wb.model.connectivity,
                                                         pattern_subdir = sig_folder,
                                                         script = matlab_apply_wb_signature),
                format = "file"),
     names = sig_name
   ),
-  names = encoding_type_full
+  names = c(encoding_type_full, roi_name)
 )
 
 subtargets_fmri_canlabtools_compare.models <- list(
@@ -709,6 +710,27 @@ subtargets_fmri_canlabtools_compare.models <- list(
               permute_acc_object_by_pattern(n_perms = 100),
             batches = 10,
             reps = 1
+    ),
+    # Take care that these don't end up inside a tar_map by ROI because they have no brain data in them
+    tar_target(name = fixation.decoding,
+               command = bidsmreye.coords_all.subs %>%
+                 fit_object_by_pattern(events_allsubs = left_join(events_target,
+                                                                  beh, 
+                                                                  by = c("subj_num", "video_id")),
+                                       n_trs_kept_per_run = task_defaults_list$n_trs_kept,
+                                       pattern_type = "eyetrack",
+                                       outcome_categories = outcome_category,
+                                       n_pls_comp = 20)
+    ),
+    tar_target(name = eyemovement.decoding,
+               command = bidsmreye.movement_all.subs %>%
+                 fit_object_by_pattern(events_allsubs = left_join(events_target,
+                                                                  beh, 
+                                                                  by = c("subj_num", "video_id")),
+                                       n_trs_kept_per_run = task_defaults_list$n_trs_kept,
+                                       pattern_type = "eyetrack",
+                                       outcome_categories = outcome_category,
+                                       n_pls_comp = 20)
     ),
     names = c(outcome_category, events_type)
   ),
@@ -1342,8 +1364,8 @@ subtargets_fmri_summary <- list(
                mutate(correlation_cohens.d = cohens.d.2(correlation_mean, correlation_sd, 0, correlation_sd))
              ),
   tar_target(name = summary_encoding.discrim.looming,
-             command = calc_perm_pval_object_by_pattern(preds = encoding.decoding_loom_events.raw_flynet.only, 
-                                                        perms = perm.acc_encoding.decoding_loom_events.raw_flynet.only)
+             command = calc_perm_pval_object_by_pattern(preds = encoding.decoding_loom_events.raw_flynet.only_sc, 
+                                                        perms = perm.acc_encoding.decoding_loom_events.raw_flynet.only_sc)
   ),
   tar_target(name = summary_encoding.discrim.looming_by.category,
              command = calc_perm_pval_object_by_pattern(preds = encoding.decoding_loom_events.raw_flynet.only, 
@@ -1471,13 +1493,7 @@ subtargets_fmri_summary <- list(
                summarize(across(-fold_num, list(mean = \(x) mean(x, na.rm = TRUE), 
                                                 sd = \(x) sd(x, na.rm = TRUE), 
                                                 se = \(x) sd(x, na.rm = TRUE)/sqrt(sum(!is.nan(x))))))
-  ),
-  tar_target(name = beta.comparison_category.selfreport,
-             command = compare_betas_encoding_category_selfreport(encoding.decoding.nosplit_loom_events.raw_flynet.only,
-                                                                  encoding.decoding.nosplit_obj_events.raw_alexnet.only,
-                                                                  encoding.selfreport.nosplit_flynet.only,
-                                                                  encoding.selfreport.nosplit_alexnet.only,
-                                                                  n_bootstraps = 10000))
+  )
 )
 
 targets_fmri_across.subject <- make_targets_fmri_across.subject(targets_fmri_by.subject,
@@ -1683,7 +1699,7 @@ targets_plots <- list(
                this_theme
   ),
   tar_target(plot_encoding.confusion.looming_flynet,
-             command = encoding.decoding_loom_events.raw_flynet.only %>% 
+             command = encoding.decoding_loom_events.raw_flynet.only_sc %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
                filter(animal_type != "food") %>% 
@@ -1695,7 +1711,7 @@ targets_plots <- list(
                theme(aspect.ratio = 1)
   ),
   tar_target(plot_encoding.confusion.looming_flynet_by.category,
-             command = encoding.decoding_loom_events.raw_flynet.only %>% 
+             command = encoding.decoding_loom_events.raw_flynet.only_sc %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
                filter(animal_type != "food") %>% 
@@ -1791,10 +1807,6 @@ targets_plots <- list(
                theme(legend.position = "inside",
                      legend.position.inside = c(0,1),
                      legend.justification = c(0,1))),
-  tar_target(name = plot_beta.comparison_object.selfreport,
-             command = plot_cormats_encoding_object_selfreport(beta.comparison_category.selfreport) +
-               this_theme +
-               theme(aspect.ratio = 1)),
   tar_target(name = plot_ggseg.conn_flynet_lat.med,
              command = parcels.wb.connectivity_flynet.only %>% 
                get_parcel_tvals_long() %>% 
