@@ -73,6 +73,9 @@ make_targets_fmri_by.run <- function (n_runs, task = "controlled", additional_ta
                                     kernel = 4,
                                     script = matlab_spmbatch_smooth),
                format = "file"),
+    tar_target(name = bidsmreye,
+               command = get_raw_bidsmreye(subject, task_bids, run_bids),
+               format = "file"),
     additional_targets,
     names = run_bids
   )
@@ -138,6 +141,8 @@ make_targets_fmri_by.subject <- function(df_participants, targets_by.run, contra
                 targets_by.run[["bold.smoothed"]]),
     tar_combine(name = confounds.prespm,
                 targets_by.run[["confounds.prespm"]]),
+    tar_combine(name = bidsmreye,
+                targets_by.run[["bidsmreye"]]),
     targets_to_map,
     additional_targets,
     names = subject
