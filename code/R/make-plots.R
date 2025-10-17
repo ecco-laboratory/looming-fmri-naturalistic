@@ -241,7 +241,7 @@ plot_confusion <- function(object_preds_unnested,
   plot_data <- object_preds_unnested %>% 
     count(!!!facet_vars, .obs, .pred) %>% 
     # bc complete uses all implicit factor levels, which may re-input intentionally empty categories like food
-    mutate(across(c(.obs, .pred), fct_drop)) %>%
+    mutate(across(c(.obs, .pred), \(x) fct_drop(x, only = "food"))) %>%
     complete(!!!facet_vars, .obs, .pred, fill = list(n = 0)) %>%
     group_by(pick(!!!facet_vars, .obs)) %>% 
     mutate(prob = n/sum(n)) %>% 
