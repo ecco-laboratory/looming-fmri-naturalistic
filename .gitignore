@@ -179,3 +179,4 @@ ignore/
 
 # the GBVS toolbox which has been copied in
 code/matlab/gbvs
+code/matlab/gbvs2
