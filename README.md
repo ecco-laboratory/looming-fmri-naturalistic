@@ -4,7 +4,7 @@ The superior colliculus is well known for its roles in visual orienting, oculomo
 In this project, we tested whether the human superior colliculus functions in isolation during looming threat perception, or if it covaries with cortical networks involved in visual salience and object recognition. We used computational models of [looming detection](https://elifesciences.org/articles/72067), [visual saliency](https://ieeexplore.ieee.org/document/730558/), and [object recognition](https://papers.nips.cc/paper_files/paper/2012/hash/c399862d3b9d6b76c8436e924a68c45b-Abstract.html) to predict patterns of superior colliculus BOLD response acquired as participants viewed a series of naturalistic videos or performed a working memory task, and to examine their functional connectivity with the rest of the brain. A detailed description of this work is forthcoming. This repository provides the source code used to conduct these analyses.
 
 <p align="center">
-<img src="https://github.com/ecco-laboratory/looming-fmri-naturalistic/blob/master/images/GraphicalAbstract.png" width="800">
+<img src="https://github.com/ecco-laboratory/looming-fmri-naturalistic/blob/master/GraphicalAbstract.png" width="800">
 </p>
 
 
