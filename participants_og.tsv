@@ -1,0 +1,58 @@
+# Note from Monica T, as of 2026-01-09:
+# This is a static copy of the BIDS-compatible participants.tsv pertaining to 
+# the subjects included in Thieu et al 2026 Cell Reports
+# They are part of a continuing study with a larger dataset, but this is just the first chunk of subjects.
+# THIS FILE CONTAINS THE CONTROL METADATA THAT GATES WHICH PARTICIPANTS ARE INCLUDED IN MAIN ANALYSES!!!
+# Ps' MRIQC reports were MANUALLY REVIEWED after fmriprepping by the authors. If a P's data are usable,
+# the group column for each P has been MANUALLY RELABELED as one of the following:
+# 'use_both' (no quotes, as you see with the other values) if both controlled and naturalistic are usable
+# 'use_controlled' if only controlled is usable
+# 'use_naturalistic' if only naturalistic is usable
+# 'exclude' if neither are usable
+participant_id	age	sex	group
+sub-0001	31	F	use_both
+sub-0002	30	F	use_both
+sub-0003	22	F	use_both
+sub-0004	30	F	use_both
+sub-0005	18	F	exclude
+sub-0006	25	O	use_both
+sub-0007	22	F	use_both
+sub-0008	18	F	use_both
+sub-0009	20	F	use_both
+sub-0010	22	F	use_both
+sub-0011	22	M	exclude
+sub-0012	29	O	use_both
+sub-0013	23	F	use_both
+sub-0014	21	F	use_both
+sub-0015	22	F	use_both
+sub-0017	19	F	use_both
+sub-0018	23	F	use_both
+sub-0019	22	F	use_both
+sub-0016	18	F	exclude
+sub-0020	19	F	use_both
+sub-0021	18	O	use_both
+sub-0022	42	F	use_both
+sub-0023	22	F	use_both
+sub-0024	35	F	use_both
+sub-0025	26	F	use_both
+sub-0026	28	F	use_both
+sub-0027	25	F	use_both
+sub-0028	28	F	use_both
+sub-0029	29	F	use_both
+sub-0031	22	F	use_both
+sub-0032	19	F	use_both
+sub-0033	22	F	use_both
+sub-0034	38	M	use_both
+sub-0035	24	F	use_both
+sub-0037	50	M	use_both
+sub-0038	53	M	exclude
+sub-0039	38	M	use_naturalistic
+sub-0040	51	M	use_both
+sub-0041	23	M	use_both
+sub-0042	23	F	use_both
+sub-0043	25	F	use_both
+sub-0044	25	M	use_both
+sub-0045	22	F	use_both
+sub-0046	24	M	use_both
+sub-0047	31	F	use_both
+sub-0048	19	F	use_both

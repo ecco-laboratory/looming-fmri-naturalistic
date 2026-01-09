@@ -1,0 +1,28 @@
+name: thieu2026loom
+channels:
+  - pytorch
+  - defaults
+  - conda-forge
+dependencies:
+  - pandas
+  - seaborn
+  - onnx
+  - pillow
+  - numpy
+  - onnxruntime
+  - scikit-learn
+  - pycocotools
+  - onnx2torch
+  - ipykernel
+  - torchvision
+  - h5py
+  - tqdm
+  - ipywidgets
+  - av
+  - cudatoolkit=11.6
+  - pytorch
+  - tslearn
+  - opencv
+  - pytables
+  - ffmpeg-python
+prefix: /opt/miniconda3/envs/thieu2026loom
