@@ -29,17 +29,19 @@ tar_option_set(
                "cowplot"), # packages that your targets need to run
   error = "trim",
   controller = crew.cluster::crew_controller_slurm(
-    workers = 12,
+    workers = 6,
     seconds_idle = 30,
     options_cluster = crew.cluster::crew_options_slurm(
       verbose = TRUE,
-      script_lines = "#SBATCH --account=default",
+      script_lines = c("#SBATCH --account=default",
+                       "#SBATCH --exclude=node3"),
       log_output = "/home/%u/log/crew_log_%A.out",
       log_error = "/home/%u/log/crew_log_%A.err",
-      memory_gigabytes_required = 8,
+      memory_gigabytes_required = 12,
       cpus_per_task = 1,
-      # time_minutes = 1339, partition = "day-long"
-      time_minutes = 29, partition = "short"
+      # of the 2 lines below, uncomment the one for your desired partition
+      time_minutes = 1339, partition = "day-long"
+      # time_minutes = 29, partition = "short"
     )
   )
 )
@@ -86,6 +88,11 @@ targets_scripts_naturalistic <- list(
     name = matlab_spmbatch_contrast_level1,
     command = here::here("code", "matlab", "calc_contrasts_level1_naturalistic.m"),
     format = "file"
+  ),
+  tar_target(
+    name = matlab_canlabtools_brainstemnavigator,
+    command = here::here("ignore", "bianciardi_MNI152NLin2009cAsym_atlas_object.mat"),
+    format = "file"
   )
 )
 
@@ -109,12 +116,10 @@ targets_stimuli <- list(
   # these don't really need to get shown to humans, we can show them the native fps ones
   # this is for the encoding models
   tar_target(name = videos_10fps,
-             command = {
-               videos
-               resample_video_fps(in_path = folder_videos,
-                                  out_path = here::here("ignore", "stimuli", "videos", "naturalistic_10fps"),
-                                  script = py_resample_video_fps)
-             },
+             command = resample_video_fps(in_path = videos,
+                                          out_folder = here::here("ignore", "stimuli", "videos", "naturalistic_10fps"),
+                                          script = py_resample_video_fps),
+             pattern = map(videos),
              format = "file"),
   tar_target(name = metadata_videos,
              command = {
@@ -222,6 +227,16 @@ targets_encoding.models <- list(
                
                out_path
              },
+             format = "file"),
+  # 2025-10-17: temp Phil's huge file before I write out video specific versions?
+  tar_target(name = activations.ittikoch_bulk,
+             command = here::here("ignore", "outputs", "SPLaT_Naturalistic_IttiKoch.csv"),
+             format = "file"),
+  tar_target(name = activations.ittikoch_raw,
+             command = calc_ittikoch_activations(video = videos_10fps,
+                                                 out_folder = here::here("ignore", "data", "encoding", "ittikoch"),
+                                                 script = matlab_calc_ittikoch_activations),
+             pattern = map(videos_10fps),
              format = "file")
 )
 
@@ -283,7 +298,8 @@ targets_qc <- list(
 # Use the participants.tsv file as a code-agnostic way of tracking which subjects to use
 # It must be edited MANUALLY to label subjects as group "use" once their fmriqc has been checked and approved
 # that way, only subjects manually approved will be included in these analyses
-participants <- inject(here::here(!!!path_here_fmri, "participants.tsv")) %>% 
+# 2025-12-10: confirming that we are using the frozen set of participants who were included in the initial submission
+participants <- inject(here::here("participants_og.tsv")) %>% 
   read_tsv(comment = "#") %>% 
   # Anyone who didn't do all 3 runs should be marked as unusable for naturalistic
   filter(group %in% c("use_both", "use_naturalistic")) %>% 
@@ -320,7 +336,29 @@ subtargets_encoding.timecourses_by.run <- list(
                                                        out_path = here::here("ignore", "outputs", sprintf("task-naturalistic_%s_%s_acts-onoff.csv", subject, run_bids)),
                                                        tr_duration = task_defaults_list$tr_duration,
                                                        run_duration = task_defaults_list$n_trs_kept * task_defaults_list$tr_duration,
-                                                       fixation_activation = tibble(`0` = 0)))
+                                                       fixation_activation = tibble(`0` = 0)),
+             format = "file"),
+  tar_target(name = activations.ittikoch,
+             command = make_encoding_timecourse_matlab(onsets = events,
+                                                       path_stim_activations = activations.ittikoch_raw,
+                                                       out_path = here::here("ignore", "outputs", sprintf("task-naturalistic_%s_%s_acts-ittikoch.csv", subject, run_bids)),
+                                                       tr_duration = task_defaults_list$tr_duration,
+                                                       run_duration = task_defaults_list$n_trs_kept * task_defaults_list$tr_duration),
+             format = "file"),
+  tar_target(name = bold.byrun.masked.antcblm,
+             command = canlabtools_mask_fmri_data(out_path = here::here("ignore", "data", "canlabtools", 
+                                                                        sprintf("%s_%s_%s_region-antcblm_bold.mat", subject, task_bids, run_bids)),
+                                                  tr_duration = task_defaults_list$tr_duration,
+                                                  trs_to_use = 1:task_defaults_list$n_trs_kept + (task_defaults_list$disdaq_duration %/% task_defaults_list$tr_duration),
+                                                  bolds = bold.smoothed,
+                                                  confounds = confounds.prespm,
+                                                  roi = "Cblm_I_IV",
+                                                  script = matlab_mask_fmri_data),
+             format = "file"),
+  tar_target(activations.antcblm,
+             command = make_nuisance_roi_timecourse_matlab(path_bold_mat_1run = bold.byrun.masked.antcblm,
+                                                           out_path = here::here("ignore", "outputs", sprintf("task-naturalistic_%s_%s_roiavg-antcblm.csv", subject, run_bids))),
+             format = "file")
 )
 
 # attention! this is the innermost tar_map, which defines RUN-UNIQUE targets
@@ -369,14 +407,21 @@ subtargets_encoding.timecourses_combine <- list(
   tar_combine(name = activations.alexnet,
               targets_fmri_by.run[["activations.alexnet"]]),
   tar_combine(name = activations.onoff,
-              targets_fmri_by.run[["activations.onoff"]])
+              targets_fmri_by.run[["activations.onoff"]]),
+  tar_combine(name = activations.ittikoch,
+              targets_fmri_by.run[["activations.ittikoch"]]),
+  tar_combine(name = activations.antcblm,
+              targets_fmri_by.run[["activations.antcblm"]])
 )
 
 tar_map_rois <- tibble(roi_name = c("sc", "thal", "midb", "antcblm"), 
                        # There are multiple canlab2018 ROIs with Midb as a prefix... all of them together should be ok? Some appear to be dorsal/ventral?
                        # The anterior cerebellum ROIs are originally from the SUIT atlas
                        # selected by moi to correspond approximately to the ROI selected by Wall et al. 2009 as a physically nearby but functionally unrelated control region to SC
-                       roi_canlabtools = c("Bstem_SC", "Thal_", "Bstem_Midb", "Cblm_I_IV"))
+                       roi_canlabtools = list("Bstem_SC",
+                                              "Thal_",
+                                              "Bstem_Midb",
+                                              "Cblm_I_IV"))
 
 subtargets_bold.masked <- tar_map(
   values = tar_map_rois,
@@ -390,6 +435,12 @@ subtargets_bold.masked <- tar_map(
                                                   roi = roi_canlabtools,
                                                   script = matlab_mask_fmri_data),
              format = "file"),
+  #  ,
+  # as long as you can get it to write out to a headerless CSV for a single run where each row is a TR and the one column is the ROI BOLD
+  # it should plug right in
+  # tar_target(name = activations.roiavg,
+  #            command = 
+  #            format = "file")
   names = roi_name,
   # to fit my "legacy" naming of bold.masked.sc
   delimiter = "."
@@ -408,6 +459,8 @@ targets_fmri_by.subject <- make_targets_fmri_by.subject(participants,
 ### SPM level 2 group analyses ----
 # this eval factory is for aggregating stuff across all subs
 subtargets_fmri_across.subject <- list(
+  # these aggregate over the by-subject ones, which themselves aggregate over by-run activations
+  # so if you add a new set of activations, add a tar_combine here AND earlier in the by-subject aggregator
   tar_combine(name = activations.flynet_all.subs,
               targets_fmri_by.subject[["activations.flynet"]],
               command = list(!!!.x)),
@@ -416,6 +469,12 @@ subtargets_fmri_across.subject <- list(
               command = list(!!!.x)),
   tar_combine(name = activations.onoff_all.subs,
               targets_fmri_by.subject[["activations.onoff"]],
+              command = list(!!!.x)),
+  tar_combine(name = activations.ittikoch_all.subs,
+              targets_fmri_by.subject[["activations.ittikoch"]],
+              command = list(!!!.x)),
+  tar_combine(name = activations.antcblm_all.subs,
+              targets_fmri_by.subject[["activations.antcblm"]],
               command = list(!!!.x)),
   tar_combine(name = bold.smoothed_all.subs,
               targets_fmri_by.subject[["bold.smoothed"]],
@@ -430,6 +489,8 @@ subtargets_fmri_across.subject <- list(
               targets_fmri_by.subject[["bold.masked.thal"]]),
   tar_combine(name = bold.masked.midb_all.subs,
               targets_fmri_by.subject[["bold.masked.midb"]]),
+  tar_combine(name = bold.masked.antcblm_all.subs,
+              targets_fmri_by.subject[["bold.masked.antcblm"]]),
   tar_combine(name = events.timecourse_all.subs,
               targets_fmri_by.subject[["events.timecourse"]],
               command = bind_rows(!!!.x, .id = "target_name") %>% 
@@ -505,10 +566,15 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
   values = tribble(~encoding_type1, ~encoding_type2,
                    "flynet", "only",
                    "alexnet", "only",
+                   "ittikoch", "only",
                    "flynet", "alexnet",
                    "onoff", "only",
                    "flynet", "onoff",
-                   "alexnet", "onoff") %>% 
+                   "alexnet", "onoff",
+                   "flynet", "antcblm",
+                   "alexnet", "antcblm",
+                   "flynet", "ittikoch",
+                   "alexnet", "ittikoch") %>% 
     # 2025-10-13: Cell Reports revisions mapping the encoding model analysis to more ROIs again
     expand(nesting(encoding_type1, encoding_type2), 
            # the anterior cerebellum ROI is ONLY for generating bold.masked!!! Not for fitting encoding models!!!
@@ -524,6 +590,7 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
              command = canlabtools_fit_encoding_pls(out_path_perf = here::here("ignore", "outputs", sprintf("naturalistic_perf.%s_%s.csv", encoding_type_full, roi_name)),
                                                     out_path_pred = here::here("ignore", "outputs", sprintf("naturalistic_pred.%s_%s.csv", encoding_type_full, roi_name)),
                                                     out_path_betas = here::here("ignore", "outputs", sprintf("naturalistic_betas.%s_%s.csv", encoding_type_full, roi_name)),
+                                                    out_path_resid = here::here("ignore", "outputs", sprintf("naturalistic_resids.%s_%s.csv", encoding_type_full, roi_name)),
                                                     tr_duration = task_defaults_list$tr_duration,
                                                     bolds = bold_all.subs,
                                                     # by default fits one encoding model at a time
@@ -541,6 +608,9 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
   # TODO 2025-04-03: 1. Look at which AlexNet units are 
   tar_target(name = betas.encoding.xval,
              command = encoding.xval[grepl("betas", encoding.xval)],
+             format = "file"),
+  tar_target(name = resid.encoding.xval,
+             command = encoding.xval[grepl("resid", encoding.xval)],
              format = "file"),
   tar_target(name = betas.encoding.overall,
              command = canlabtools_fit_encoding_pls_no.xval(out_path_betas = here::here("ignore", "outputs", sprintf("naturalistic_betas.noxval.%s_%s.csv", encoding_type_full)),
@@ -675,189 +745,278 @@ subtargets_fmri_canlabtools_by.model <- tar_map(
 subtargets_fmri_canlabtools_compare.models <- list(
   subtargets_fmri_canlabtools_by.model,
   # this combined target is up here because it doesn't depend on any of the semi-recursive model comparison ones
-  tar_combine(name = betas.encoding.xval,
-              subtargets_fmri_canlabtools_by.model[["betas.encoding.xval"]],
-              command = {
-                vctrs::vec_c(!!!.x) %>% 
-                  map(\(x) read_csv(x, col_names = FALSE) %>% 
-                        # OMIT the intercept from the PLS
-                        slice(-1)) %>% 
-                  bind_rows(.id = "target_name") %>% 
-                  rename(fold_num = X1) %>% 
-                  mutate(encoding_type = str_split_i(target_name, "_", -1L)) %>% 
-                  select(-target_name)
-              }),
-  #### decoding-from-encoding analyses mapped by decoding quantity and events labeling type ----
-  tar_map(
-    values = crossing(events_type = c("events.raw", "events.endspike"),
-                      outcome_category = c("loom", "obj", "obj.loom")) %>% 
-      mutate(events_label = case_match(events_type, "events.raw" ~ "", "events.endspike" ~ ".endspike"),
-             events_target = syms(sprintf("events.timecourse%s_all.subs", events_label))),
-    tar_target(name = bold.object,
-               command = bold.masked.sc_all.subs %>%
-                 fit_object_by_pattern(events_allsubs = left_join(events_target,
-                                                                  beh, 
-                                                                  by = c("subj_num", "video_id")),
-                                       n_trs_kept_per_run = task_defaults_list$n_trs_kept,
-                                       pattern_type = "bold",
-                                       outcome_categories = outcome_category,
-                                       n_pls_comp = 20)
-    ),
-    tar_rep(name = perm.acc_bold.object,
-            command = bold.object %>% 
-              select(preds) %>% 
-              unnest(preds) %>% 
-              permute_acc_object_by_pattern(n_perms = 100),
-            batches = 10,
-            reps = 1
-    ),
-    # Take care that these don't end up inside a tar_map by ROI because they have no brain data in them
-    tar_target(name = fixation.decoding,
-               command = bidsmreye.coords_all.subs %>%
-                 fit_object_by_pattern(events_allsubs = left_join(events_target,
-                                                                  beh, 
-                                                                  by = c("subj_num", "video_id")),
-                                       n_trs_kept_per_run = task_defaults_list$n_trs_kept,
-                                       pattern_type = "eyetrack",
-                                       outcome_categories = outcome_category,
-                                       n_pls_comp = 20)
-    ),
-    tar_target(name = eyemovement.decoding,
-               command = bidsmreye.movement_all.subs %>%
-                 fit_object_by_pattern(events_allsubs = left_join(events_target,
-                                                                  beh, 
-                                                                  by = c("subj_num", "video_id")),
-                                       n_trs_kept_per_run = task_defaults_list$n_trs_kept,
-                                       pattern_type = "eyetrack",
-                                       outcome_categories = outcome_category,
-                                       n_pls_comp = 20)
-    ),
-    names = c(outcome_category, events_type)
-  ),
-  #### performance from joint encoding models with one set of activations knocked out ----
-  tar_target(name = encoding.xval_flynet.minus.onoff,
-             command = canlabtools_pred_encoding_pls(out_path_perf = here::here("ignore", "outputs", sprintf("naturalistic_perf.flynet.minus.onoff_sc.csv")),
-                                                     out_path_pred = here::here("ignore", "outputs", sprintf("naturalistic_pred.flynet.minus.onoff_sc.csv")),
-                                                     tr_duration = task_defaults_list$tr_duration,
-                                                     bolds = bold.masked.sc_all.subs,
-                                                     activations1 = activations.flynet_all.subs,
-                                                     betas = betas.encoding.xval_flynet.onoff,
-                                                     script = matlab_pred_pls),
-             format = "file"),
-  tar_target(name = encoding.xval_alexnet.minus.onoff,
-             command = canlabtools_pred_encoding_pls(out_path_perf = here::here("ignore", "outputs", sprintf("naturalistic_perf.alexnet.minus.onoff_sc.csv")),
-                                                     out_path_pred = here::here("ignore", "outputs", sprintf("naturalistic_pred.alexnet.minus.onoff_sc.csv")),
-                                                     tr_duration = task_defaults_list$tr_duration,
-                                                     bolds = bold.masked.sc_all.subs,
-                                                     activations1 = activations.alexnet_all.subs,
-                                                     betas = betas.encoding.xval_alexnet.onoff,
-                                                     script = matlab_pred_pls),
-             format = "file"),
-  tar_target(name = perf.encoding.xval_flynet.minus.onoff,
-             command = encoding.xval_flynet.minus.onoff %>% 
-               .[grepl("perf", .)] %>% 
-               read_csv(col_names = FALSE)),
-  tar_target(name = pred.encoding.xval_flynet.minus.onoff,
-             command = encoding.xval_flynet.minus.onoff %>% .[grepl("pred", .)],
-             format = "file"),
-  tar_target(name = perf.encoding.xval_alexnet.minus.onoff,
-             command = encoding.xval_alexnet.minus.onoff %>% 
-               .[grepl("perf", .)] %>% 
-               read_csv(col_names = FALSE)),
-  tar_target(name = pred.encoding.xval_alexnet.minus.onoff,
-             command = encoding.xval_alexnet.minus.onoff %>% .[grepl("pred", .)],
-             format = "file"),
-  tar_target(name = statmap.perf.encoding_flynet.minus.alexnet,
-             command = {
-               canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_perf_flynet_minus_alexnet_sc.nii")),
-                                          roi = roi_canlabtools,
-                                          values = summarize_tvals_pre_statmap(perf.encoding.xval_flynet.only, perf.encoding.xval_alexnet.only),
-                                          script = matlab_export_statmap)
-             },
-             format = "file"),
-  tar_target(name = parcels.wb.connectivity_flynet.minus.alexnet,
-             command = canlabtools_parcellate_avg(out_path = here::here("ignore", "outputs", sprintf("naturalistic_parcel_conn_flynet_minus_alexnet_sc.csv")),
-                                                  path_connectivity_allsubs_1 = wb.model.connectivity_flynet.only,
-                                                  path_connectivity_allsubs_2 = wb.model.connectivity_alexnet.only,
-                                                  fun_compare = "minus",
-                                                  script = matlab_parcellate_avg),
-             format = "file"),
-  tar_target(name = tvals.wb.model.connectivity_flynet.minus.alexnet,
-             command = {
-               connectivity.flynet <- vroom::vroom(wb.model.connectivity_flynet.only, 
-                                                   delim = ",", 
-                                                   col_names = FALSE, 
-                                                   col_types = c(.default = "d"))
-               
-               connectivity.alexnet <- vroom::vroom(wb.model.connectivity_alexnet.only, 
+  # TODO 2025-10-27: This target candidate for deletion? No longer referenced?
+  # tar_combine(name = betas.encoding.xval,
+  #             subtargets_fmri_canlabtools_by.model[["betas.encoding.xval"]],
+  #             command = {
+  #               vctrs::vec_c(!!!.x) %>% 
+  #                 map(\(x) read_csv(x, col_names = FALSE) %>% 
+  #                       # OMIT the intercept from the PLS
+  #                       slice(-1)) %>% 
+  #                 bind_rows(.id = "target_name") %>% 
+  #                 rename(fold_num = X1) %>% 
+  #                 mutate(encoding_type = str_split_i(target_name, "_", -1L)) %>% 
+  #                 select(-target_name)
+  #             }),
+  tar_map(values = filter(tar_map_rois, roi_name != "antcblm") %>% 
+            mutate(betas_flynet.onoff = syms(sprintf("betas.encoding.xval_flynet.onoff_%s", roi_name)),
+                   betas_alexnet.onoff = syms(sprintf("betas.encoding.xval_alexnet.onoff_%s", roi_name)),
+                   betas_flynet.antcblm = syms(sprintf("betas.encoding.xval_flynet.antcblm_%s", roi_name)),
+                   betas_alexnet.antcblm = syms(sprintf("betas.encoding.xval_alexnet.antcblm_%s", roi_name)),
+                   betas_flynet.ittikoch = syms(sprintf("betas.encoding.xval_flynet.ittikoch_%s", roi_name)),
+                   betas_alexnet.ittikoch = syms(sprintf("betas.encoding.xval_alexnet.ittikoch_%s", roi_name))),
+          #### decoding-from-encoding analyses mapped by decoding quantity and events labeling type ----
+          tar_map(
+            values = crossing(events_type = c("events.raw", "events.endspike"),
+                              outcome_category = c("loom", "obj", "obj.loom")) %>% 
+              mutate(events_label = case_match(events_type, "events.raw" ~ "", "events.endspike" ~ ".endspike"),
+                     events_target = syms(sprintf("events.timecourse%s_all.subs", events_label))),
+            tar_target(name = bold.object,
+                       command = bold.masked.sc_all.subs %>%
+                         fit_object_by_pattern(events_allsubs = left_join(events_target,
+                                                                          beh, 
+                                                                          by = c("subj_num", "video_id")),
+                                               n_trs_kept_per_run = task_defaults_list$n_trs_kept,
+                                               pattern_type = "bold",
+                                               outcome_categories = outcome_category,
+                                               n_pls_comp = 20)
+            ),
+            tar_rep(name = perm.acc_bold.object,
+                    command = bold.object %>% 
+                      select(preds) %>% 
+                      unnest(preds) %>% 
+                      permute_acc_object_by_pattern(n_perms = 100),
+                    batches = 10,
+                    reps = 1
+            ),
+            # Take care that these don't end up inside a tar_map by ROI because they have no brain data in them
+            tar_target(name = fixation.decoding,
+                       command = bidsmreye.coords_all.subs %>%
+                         fit_object_by_pattern(events_allsubs = left_join(events_target,
+                                                                          beh, 
+                                                                          by = c("subj_num", "video_id")),
+                                               n_trs_kept_per_run = task_defaults_list$n_trs_kept,
+                                               pattern_type = "eyetrack",
+                                               outcome_categories = outcome_category,
+                                               n_pls_comp = 20)
+            ),
+            tar_target(name = eyemovement.decoding,
+                       command = bidsmreye.movement_all.subs %>%
+                         fit_object_by_pattern(events_allsubs = left_join(events_target,
+                                                                          beh, 
+                                                                          by = c("subj_num", "video_id")),
+                                               n_trs_kept_per_run = task_defaults_list$n_trs_kept,
+                                               pattern_type = "eyetrack",
+                                               outcome_categories = outcome_category,
+                                               n_pls_comp = 20)
+            ),
+            tar_target(name = summary_fixation.decoding,
+                       command = fixation.decoding %>% 
+                         select(-coefs) %>% 
+                         unnest(preds) %>% 
+                         unnest_wider(.preds) %>% 
+                         group_by(subj_num) %>% 
+                         yardstick::metrics(truth = .obs, estimate = .pred, 
+                                            starts_with(".pred_outcome")) %>% 
+                         group_by(.metric) %>% 
+                         summarize(mean = mean(.estimate), 
+                                   se = sd(.estimate)/sqrt(n()))
+            ),
+            names = c(outcome_category, events_type)
+          ),
+          #### performance from joint encoding models with one set of activations knocked out ----
+          tar_target(name = encoding.xval_flynet.minus.onoff,
+                     command = canlabtools_pred_encoding_pls(out_path_perf = here::here("ignore", "outputs", sprintf("naturalistic_perf.flynet.minus.onoff_sc.csv")),
+                                                             out_path_pred = here::here("ignore", "outputs", sprintf("naturalistic_pred.flynet.minus.onoff_sc.csv")),
+                                                             tr_duration = task_defaults_list$tr_duration,
+                                                             bolds = bold.masked.sc_all.subs,
+                                                             activations1 = activations.flynet_all.subs,
+                                                             betas = betas_flynet.onoff,
+                                                             script = matlab_pred_pls),
+                     format = "file"),
+          tar_target(name = encoding.xval_alexnet.minus.onoff,
+                     command = canlabtools_pred_encoding_pls(out_path_perf = here::here("ignore", "outputs", sprintf("naturalistic_perf.alexnet.minus.onoff_sc.csv")),
+                                                             out_path_pred = here::here("ignore", "outputs", sprintf("naturalistic_pred.alexnet.minus.onoff_sc.csv")),
+                                                             tr_duration = task_defaults_list$tr_duration,
+                                                             bolds = bold.masked.sc_all.subs,
+                                                             activations1 = activations.alexnet_all.subs,
+                                                             betas = betas_alexnet.onoff,
+                                                             script = matlab_pred_pls),
+                     format = "file"),
+          tar_target(name = encoding.xval_flynet.minus.antcblm,
+                     command = canlabtools_pred_encoding_pls(out_path_perf = here::here("ignore", "outputs", sprintf("naturalistic_perf.flynet.minus.antcblm_sc.csv")),
+                                                             out_path_pred = here::here("ignore", "outputs", sprintf("naturalistic_pred.flynet.minus.antcblm_sc.csv")),
+                                                             tr_duration = task_defaults_list$tr_duration,
+                                                             bolds = bold.masked.sc_all.subs,
+                                                             activations1 = activations.flynet_all.subs,
+                                                             betas = betas_flynet.antcblm,
+                                                             script = matlab_pred_pls),
+                     format = "file"),
+          tar_target(name = encoding.xval_alexnet.minus.antcblm,
+                     command = canlabtools_pred_encoding_pls(out_path_perf = here::here("ignore", "outputs", sprintf("naturalistic_perf.alexnet.minus.antcblm_sc.csv")),
+                                                             out_path_pred = here::here("ignore", "outputs", sprintf("naturalistic_pred.alexnet.minus.antcblm_sc.csv")),
+                                                             tr_duration = task_defaults_list$tr_duration,
+                                                             bolds = bold.masked.sc_all.subs,
+                                                             activations1 = activations.alexnet_all.subs,
+                                                             betas = betas_alexnet.antcblm,
+                                                             script = matlab_pred_pls),
+                     format = "file"),
+          tar_target(name = encoding.xval_flynet.minus.ittikoch,
+                     command = canlabtools_pred_encoding_pls(out_path_perf = here::here("ignore", "outputs", sprintf("naturalistic_perf.flynet.minus.ittikoch_sc.csv")),
+                                                             out_path_pred = here::here("ignore", "outputs", sprintf("naturalistic_pred.flynet.minus.ittikoch_sc.csv")),
+                                                             tr_duration = task_defaults_list$tr_duration,
+                                                             bolds = bold.masked.sc_all.subs,
+                                                             activations1 = activations.flynet_all.subs,
+                                                             betas = betas_flynet.ittikoch,
+                                                             script = matlab_pred_pls),
+                     format = "file"),
+          tar_target(name = encoding.xval_alexnet.minus.ittikoch,
+                     command = canlabtools_pred_encoding_pls(out_path_perf = here::here("ignore", "outputs", sprintf("naturalistic_perf.alexnet.minus.ittikoch_sc.csv")),
+                                                             out_path_pred = here::here("ignore", "outputs", sprintf("naturalistic_pred.alexnet.minus.ittikoch_sc.csv")),
+                                                             tr_duration = task_defaults_list$tr_duration,
+                                                             bolds = bold.masked.sc_all.subs,
+                                                             activations1 = activations.alexnet_all.subs,
+                                                             betas = betas_alexnet.ittikoch,
+                                                             script = matlab_pred_pls),
+                     format = "file"),
+          tar_target(name = perf.encoding.xval_flynet.minus.onoff,
+                     command = encoding.xval_flynet.minus.onoff %>% 
+                       .[grepl("perf", .)] %>% 
+                       read_csv(col_names = FALSE)),
+          tar_target(name = pred.encoding.xval_flynet.minus.onoff,
+                     command = encoding.xval_flynet.minus.onoff %>% .[grepl("pred", .)],
+                     format = "file"),
+          tar_target(name = perf.encoding.xval_alexnet.minus.onoff,
+                     command = encoding.xval_alexnet.minus.onoff %>% 
+                       .[grepl("perf", .)] %>% 
+                       read_csv(col_names = FALSE)),
+          tar_target(name = pred.encoding.xval_alexnet.minus.onoff,
+                     command = encoding.xval_alexnet.minus.onoff %>% .[grepl("pred", .)],
+                     format = "file"),
+          tar_target(name = perf.encoding.xval_flynet.minus.antcblm,
+                     command = encoding.xval_flynet.minus.antcblm %>% 
+                       .[grepl("perf", .)] %>% 
+                       read_csv(col_names = FALSE)),
+          tar_target(name = pred.encoding.xval_flynet.minus.antcblm,
+                     command = encoding.xval_flynet.minus.antcblm %>% 
+                       .[grepl("pred", .)],
+                     format = "file"),
+          tar_target(name = perf.encoding.xval_alexnet.minus.antcblm,
+                     command = encoding.xval_alexnet.minus.antcblm %>% 
+                       .[grepl("perf", .)] %>% 
+                       read_csv(col_names = FALSE)),
+          tar_target(name = pred.encoding.xval_alexnet.minus.antcblm,
+                     command = encoding.xval_alexnet.minus.antcblm %>% 
+                       .[grepl("pred", .)],
+                     format = "file"),
+          tar_target(name = perf.encoding.xval_flynet.minus.ittikoch,
+                     command = encoding.xval_flynet.minus.ittikoch %>% 
+                       .[grepl("perf", .)] %>% 
+                       read_csv(col_names = FALSE)),
+          tar_target(name = pred.encoding.xval_flynet.minus.ittikoch,
+                     command = encoding.xval_flynet.minus.ittikoch %>% 
+                       .[grepl("pred", .)],
+                     format = "file"),
+          tar_target(name = perf.encoding.xval_alexnet.minus.ittikoch,
+                     command = encoding.xval_alexnet.minus.ittikoch %>% 
+                       .[grepl("perf", .)] %>% 
+                       read_csv(col_names = FALSE)),
+          tar_target(name = pred.encoding.xval_alexnet.minus.ittikoch,
+                     command = encoding.xval_alexnet.minus.ittikoch %>% 
+                       .[grepl("pred", .)],
+                     format = "file"),
+          tar_target(name = statmap.perf.encoding_flynet.minus.alexnet,
+                     command = {
+                       canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_perf_flynet_minus_alexnet_sc.nii")),
+                                                  roi = roi_canlabtools,
+                                                  values = summarize_tvals_pre_statmap(perf.encoding.xval_flynet.only, perf.encoding.xval_alexnet.only),
+                                                  script = matlab_export_statmap)
+                     },
+                     format = "file"),
+          tar_target(name = parcels.wb.connectivity_flynet.minus.alexnet,
+                     command = canlabtools_parcellate_avg(out_path = here::here("ignore", "outputs", sprintf("naturalistic_parcel_conn_flynet_minus_alexnet_sc.csv")),
+                                                          path_connectivity_allsubs_1 = wb.model.connectivity_flynet.only,
+                                                          path_connectivity_allsubs_2 = wb.model.connectivity_alexnet.only,
+                                                          fun_compare = "minus",
+                                                          script = matlab_parcellate_avg),
+                     format = "file"),
+          tar_target(name = tvals.wb.model.connectivity_flynet.minus.alexnet,
+                     command = {
+                       connectivity.flynet <- vroom::vroom(wb.model.connectivity_flynet.only_sc, 
+                                                           delim = ",", 
+                                                           col_names = FALSE, 
+                                                           col_types = c(.default = "d"))
+                       
+                       connectivity.alexnet <- vroom::vroom(wb.model.connectivity_alexnet.only_sc, 
+                                                            delim = ",", 
+                                                            col_names = FALSE, 
+                                                            col_types = c(.default = "d"))
+                       
+                       summarize_tvals_pre_statmap(in_data_1 = connectivity.flynet,
+                                                   in_data_2 = connectivity.alexnet,
+                                                   fun_compare = magrittr::subtract)
+                     }),
+          tar_target(name = parcels.wb.connectivity_flynet.conj.alexnet,
+                     command = canlabtools_parcellate_avg(out_path = here::here("ignore", "outputs", sprintf("naturalistic_parcel_conn_flynet_conj_alexnet_sc.csv")),
+                                                          path_connectivity_allsubs_1 = wb.model.connectivity_flynet.only,
+                                                          path_connectivity_allsubs_2 = wb.model.connectivity_alexnet.only,
+                                                          # this should work--matlab min(x, y) when x and y are arrays of identical dims
+                                                          # appears to calculate the element-wise pmin which is what we want here
+                                                          fun_compare = "min",
+                                                          script = matlab_parcellate_avg),
+                     format = "file"),
+          tar_target(name = tvals.wb.model.connectivity_flynet.conj.alexnet,
+                     command = {
+                       # 2025-04-09: Phil wants it this way (Tom Nichols citation?)
+                       # threshold the individual maps first
+                       tvals.flynet <- tvals.wb.model.connectivity_flynet.only_sc %>% 
+                         threshold_tvals_pre_statmap(threshold_p = .01)
+                       tvals.alexnet <- tvals.wb.model.connectivity_alexnet.only_sc %>% 
+                         threshold_tvals_pre_statmap(threshold_p = .01)
+                       
+                       pmin(tvals.flynet, tvals.alexnet)
+                       
+                     }),
+          tar_target(name = statmap.wb.model.connectivity_flynet.minus.alexnet,
+                     command = {
+                       tvals_flynet <- vroom::vroom(wb.model.connectivity_flynet.only_sc, 
                                                     delim = ",", 
                                                     col_names = FALSE, 
-                                                    col_types = c(.default = "d"))
-               
-               summarize_tvals_pre_statmap(in_data_1 = connectivity.flynet,
-                                           in_data_2 = connectivity.alexnet,
-                                           fun_compare = magrittr::subtract)
-             }),
-  tar_target(name = parcels.wb.connectivity_flynet.conj.alexnet,
-             command = canlabtools_parcellate_avg(out_path = here::here("ignore", "outputs", sprintf("naturalistic_parcel_conn_flynet_conj_alexnet_sc.csv")),
-                                                  path_connectivity_allsubs_1 = wb.model.connectivity_flynet.only,
-                                                  path_connectivity_allsubs_2 = wb.model.connectivity_alexnet.only,
-                                                  # this should work--matlab min(x, y) when x and y are arrays of identical dims
-                                                  # appears to calculate the element-wise pmin which is what we want here
-                                                  fun_compare = "min",
-                                                  script = matlab_parcellate_avg),
-             format = "file"),
-  tar_target(name = tvals.wb.model.connectivity_flynet.conj.alexnet,
-             command = {
-               # 2025-04-09: Phil wants it this way (Tom Nichols citation?)
-               # threshold the individual maps first
-               tvals.flynet <- tvals.wb.model.connectivity_flynet.only %>% 
-                 threshold_tvals_pre_statmap(threshold_p = .01)
-               tvals.alexnet <- tvals.wb.model.connectivity_alexnet.only %>% 
-                 threshold_tvals_pre_statmap(threshold_p = .01)
-               
-               pmin(tvals.flynet, tvals.alexnet)
-               
-             }),
-  tar_target(name = statmap.wb.model.connectivity_flynet.minus.alexnet,
-             command = {
-               tvals_flynet <- vroom::vroom(wb.model.connectivity_flynet.only, 
-                                            delim = ",", 
-                                            col_names = FALSE, 
-                                            col_types = c(.default = "d")) %>% 
-                 summarize_tvals_pre_statmap() %>% 
-                 threshold_tvals_pre_statmap(threshold_p = .01)
-               
-               tvals_alexnet <- vroom::vroom(wb.model.connectivity_alexnet.only, 
-                                             delim = ",", 
-                                             col_names = FALSE, 
-                                             col_types = c(.default = "d")) %>% 
-                 summarize_tvals_pre_statmap() %>% 
-                 threshold_tvals_pre_statmap(threshold_p = .01)
-               
-               # there are many voxels where the difference is supra-threshold non-zero but the higher value isn't supra-threshold on its own
-               # so for the diff statmap, zero out voxels ahead of time where the higher value on its own doesn't exceed 0
-               # threshold_tvals_pre_statmap() retains only significant voxels as nonzero so this also has the effect 
-               # of only keeping a - b diff voxels where a is significantly positive
-               tvals_diff <- tvals.wb.model.connectivity_flynet.minus.alexnet
-               tvals_diff[tvals_diff > 0 & tvals_flynet <= 0] <- 0
-               tvals_diff[tvals_diff < 0 & tvals_alexnet <= 0] <- 0
-               
-               canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb_conn_flynet_minus_alexnet_sc.nii")),
-                                          roi = NULL,
-                                          values = tvals_diff,
-                                          threshold_p = .01,
-                                          script = matlab_export_statmap)
-             },
-             format = "file"),
-  tar_target(name = statmap.wb.model.connectivity_flynet.conj.alexnet,
-             command = {
-               canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb_conn_flynet_conj_alexnet_sc.nii")),
-                                          roi = NULL,
-                                          values = tvals.wb.model.connectivity_flynet.conj.alexnet,
-                                          script = matlab_export_statmap)
-             },
-             format = "file"),
+                                                    col_types = c(.default = "d")) %>% 
+                         summarize_tvals_pre_statmap() %>% 
+                         threshold_tvals_pre_statmap(threshold_p = .01)
+                       
+                       tvals_alexnet <- vroom::vroom(wb.model.connectivity_alexnet.only_sc, 
+                                                     delim = ",", 
+                                                     col_names = FALSE, 
+                                                     col_types = c(.default = "d")) %>% 
+                         summarize_tvals_pre_statmap() %>% 
+                         threshold_tvals_pre_statmap(threshold_p = .01)
+                       
+                       # there are many voxels where the difference is supra-threshold non-zero but the higher value isn't supra-threshold on its own
+                       # so for the diff statmap, zero out voxels ahead of time where the higher value on its own doesn't exceed 0
+                       # threshold_tvals_pre_statmap() retains only significant voxels as nonzero so this also has the effect 
+                       # of only keeping a - b diff voxels where a is significantly positive
+                       tvals_diff <- tvals.wb.model.connectivity_flynet.minus.alexnet
+                       tvals_diff[tvals_diff > 0 & tvals_flynet <= 0] <- 0
+                       tvals_diff[tvals_diff < 0 & tvals_alexnet <= 0] <- 0
+                       
+                       canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb_conn_flynet_minus_alexnet_sc.nii")),
+                                                  roi = NULL,
+                                                  values = tvals_diff,
+                                                  threshold_p = .01,
+                                                  script = matlab_export_statmap)
+                     },
+                     format = "file"),
+          tar_target(name = statmap.wb.model.connectivity_flynet.conj.alexnet,
+                     command = {
+                       canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb_conn_flynet_conj_alexnet_sc.nii")),
+                                                  roi = NULL,
+                                                  values = tvals.wb.model.connectivity_flynet.conj.alexnet,
+                                                  script = matlab_export_statmap)
+                     },
+                     format = "file"),
+          names = roi_name),
   # not a statmap! a preplot
   tar_target(name = wb.atlas_selected.rois,
              command = canlabtools_export_mask_nifti(out_path = here::here("ignore", "outputs", sprintf("mask_selected_rois.nii")),
@@ -872,7 +1031,16 @@ subtargets_fmri_canlabtools_compare.models <- list(
                                                                  "Thal_Pulv",
                                                                  "Thal_LGN"),
                                                      script = matlab_export_mask_nifti),
-             format = "file")
+             format = "file"),
+  # alternate version of the remove-ittikoch analyses for the cell reports revisions
+  tar_target(name = perf.encoding_flynet.resid.ittikoch_sc,
+             command = calc_perf_encoding_resid(path_pred_allsubs = pred.encoding.xval_flynet.only_sc,
+                                                path_resid_allsubs = resid.encoding.xval_ittikoch.only_sc)
+  ),
+  tar_target(name = perf.encoding_alexnet.resid.ittikoch_sc,
+             command = calc_perf_encoding_resid(path_pred_allsubs = pred.encoding.xval_alexnet.only_sc,
+                                                path_resid_allsubs = resid.encoding.xval_ittikoch.only_sc)
+  )
 )
 
 #### other downstream-of-canlabtools-encoding targets ----
@@ -895,8 +1063,8 @@ subtargets_fmri_canlabtools_combined <- list(
               }),
   tar_target(name = perf.encoding_flynet.alexnet.rbound,
              command = {
-               list(flynet = perf.encoding.xval_flynet.only,
-                    alexnet = perf.encoding.xval_alexnet.only) %>% 
+               list(flynet = perf.encoding.xval_flynet.only_sc,
+                    alexnet = perf.encoding.xval_alexnet.only_sc) %>% 
                  # must average across voxels to consider data across ROIs
                  # but retain xval folds
                  map(\(x) x %>% 
@@ -919,13 +1087,13 @@ subtargets_fmri_canlabtools_combined <- list(
               }),
   tar_target(name = pcor.encoding_flynet.alexnet,
              command = calc_pcor_encoding_on_bold(bold.masked.sc_all.subs,
-                                                  pred.encoding.xval_flynet.only,
-                                                  pred.encoding.xval_alexnet.only,
+                                                  pred.encoding.xval_flynet.only_sc,
+                                                  pred.encoding.xval_alexnet.only_sc,
                                                   "flynet",
                                                   "alexnet")
   ),
   tar_target(name = predata_auroc.cross_encoding.discrim.looming,
-             command = encoding.decoding_loom_events.raw_flynet.only %>% 
+             command = encoding.decoding_loom_events.raw_flynet.only_sc %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
                preproc_auroc_obj_from_loom()
@@ -935,7 +1103,7 @@ subtargets_fmri_canlabtools_combined <- list(
                roc_auc(truth = animal_value, .pred_outcome_loom)
   ),
   tar_rep(name = perm_auroc.cross_encoding.discrim.looming,
-          command = encoding.decoding_loom_events.raw_flynet.only %>% 
+          command = encoding.decoding_loom_events.raw_flynet.only_sc %>% 
             select(-coefs) %>% 
             unnest(preds) %>% 
             filter(animal_type != "food") %>% 
@@ -950,7 +1118,7 @@ subtargets_fmri_canlabtools_combined <- list(
           reps = 1
   ),
   tar_target(name = auroc.cross.allway_encoding.discrim.object,
-             command = encoding.decoding_obj_events.raw_alexnet.only %>% 
+             command = encoding.decoding_obj_events.raw_alexnet.only_sc %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
                filter(animal_type != "food") %>% 
@@ -958,7 +1126,7 @@ subtargets_fmri_canlabtools_combined <- list(
                roc_auc(truth = has_loom, .pred_animal)
   ),
   tar_target(name = predata_auroc.cross_encoding.discrim.object,
-             command = encoding.decoding_obj_events.raw_alexnet.only %>% 
+             command = encoding.decoding_obj_events.raw_alexnet.only_sc %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
                filter(animal_type != "food") %>% 
@@ -971,7 +1139,7 @@ subtargets_fmri_canlabtools_combined <- list(
                roc_auc(truth = has_loom, .pred_animal)
   ),
   tar_rep(name = perm_auroc.cross_encoding.discrim.object,
-          command = encoding.decoding_obj_events.raw_alexnet.only %>% 
+          command = encoding.decoding_obj_events.raw_alexnet.only_sc %>% 
             select(-coefs) %>% 
             unnest(preds) %>% 
             filter(animal_type != "food") %>% 
@@ -987,7 +1155,7 @@ subtargets_fmri_canlabtools_combined <- list(
           reps = 1
   ),
   tar_target(name = encoding.decoding.selfreport_rbound,
-    command = encoding.decoding.selfreport_obj_events.raw_alexnet.only %>% 
+    command = encoding.decoding.selfreport_obj_events.raw_alexnet.only_sc %>% 
       filter(outcome != "food") %>% 
       bind_rows(object = .,
                 looming = encoding.decoding.selfreport_loom_events.raw_flynet.only,
@@ -1032,9 +1200,14 @@ targets_controlled <- list(
                                            imagenet_category_labels,
                                            n_top = 1)),
   tar_files(con.files_level1.5_controlled,
-            command = list.files(here::here("ignore", "data", "canlabtools"), 
-                                 pattern = "task-controlled_region-sc_con-.*ing\\..*\\.baseline.csv",
-                                 full.names = TRUE)),
+            command = {
+              filenames <- list.files(here::here("ignore", "data", "canlabtools"), 
+                                      pattern = "task-controlled_region-sc_con-.*ing\\..*\\.baseline.csv",
+                                      full.names = TRUE)
+              # 2025-12-10: I was redoing this for a revisions analysis but as of now that revisions analysis is no longer needed
+              # so freeze this at the contrasts used for the initial submission (not broken out by above/below)
+              filenames[startsWith(basename(filenames), "task-controlled_region-sc_con-looming") | startsWith(basename(filenames), "task-controlled_region-sc_con-receding")]
+              }),
   tar_target(cons_level1.5_controlled,
              command = {
                file_path <- con.files_level1.5_controlled
@@ -1085,7 +1258,7 @@ targets_controlled <- list(
                                                           betas.encoding.xval_alexnet.only)),
   tar_target(pattern.discrim.controlled_headless_flynet,
              command = calc_controlled_pattern_discrim_headless(cons_level1.5_controlled,
-                                                                encoding.decoding_loom_events.raw_flynet.only) %>% 
+                                                                encoding.decoding_loom_events.raw_flynet.only_sc) %>% 
                # must do this after the workhorse function bc it needs to bind along `direction`
                mutate(direction = case_match(direction,
                                              "looming" ~ "loom",
@@ -1098,15 +1271,15 @@ targets_controlled <- list(
   ),
   tar_target(pattern.discrim.controlled_headless_alexnet,
              command = calc_controlled_pattern_discrim_headless(cons_level1.5_controlled,
-                                                                encoding.decoding_obj_events.raw_alexnet.only) %>% 
+                                                                encoding.decoding_obj_events.raw_alexnet.only_sc) %>% 
                mutate(across(c(animal_type, .pred), \(x) factor(x, levels = c("dog", "frog", "spider"))))
   ),
   tar_target(pattern.discrim.controlled_flynet,
              command = calc_controlled_pattern_discrim(cons_level1.5_controlled,
                                                        activations.flynet_raw_controlled,
                                                        metadata_videos_nback,
-                                                       betas.encoding.xval_flynet.only,
-                                                       encoding.decoding_loom_events.raw_flynet.only) %>% 
+                                                       betas.encoding.xval_flynet.only_sc,
+                                                       encoding.decoding_loom_events.raw_flynet.only_sc) %>% 
                # must do this after the workhorse function bc it needs to bind along `direction`
                mutate(direction = case_match(direction,
                                              "looming" ~ "loom",
@@ -1121,8 +1294,8 @@ targets_controlled <- list(
              command = calc_controlled_pattern_discrim(cons_level1.5_controlled,
                                                        activations.alexnet_raw_controlled,
                                                        metadata_videos_nback,
-                                                       betas.encoding.xval_alexnet.only,
-                                                       encoding.decoding_obj_events.raw_alexnet.only) %>% 
+                                                       betas.encoding.xval_alexnet.only_sc,
+                                                       encoding.decoding_obj_events.raw_alexnet.only_sc) %>% 
                mutate(across(c(animal_type, .pred), \(x) factor(x, levels = c("dog", "frog", "spider"))))
              ),
   tar_rep(perm_pattern.discrim.controlled_flynet,
@@ -1368,13 +1541,13 @@ subtargets_fmri_summary <- list(
                                                         perms = perm.acc_encoding.decoding_loom_events.raw_flynet.only_sc)
   ),
   tar_target(name = summary_encoding.discrim.looming_by.category,
-             command = calc_perm_pval_object_by_pattern(preds = encoding.decoding_loom_events.raw_flynet.only, 
-                                                        perms = perm.acc_by.category_encoding.decoding_loom_events.raw_flynet.only,
+             command = calc_perm_pval_object_by_pattern(preds = encoding.decoding_loom_events.raw_flynet.only_sc, 
+                                                        perms = perm.acc_by.category_encoding.decoding_loom_events.raw_flynet.only_sc,
                                                         grouping_cols = animal_type)
   ),
   # hopefully replicating a Phil analysis properly
   tar_target(name = friedman.test_encoding.discrim.looming_by.category,
-             command = encoding.decoding_loom_events.raw_flynet.only %>% 
+             command = encoding.decoding_loom_events.raw_flynet.only_sc %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
                filter(animal_type != "food") %>% 
@@ -1394,9 +1567,9 @@ subtargets_fmri_summary <- list(
                          .estimate_perm = median(.estimate_perm)) %>% 
                select(animal_to_guess, .estimate_real, .estimate_perm, pval)),
   tar_target(name = summary_encoding.discrim.object,
-             command = calc_perm_pval_object_by_pattern(preds = encoding.decoding_obj_events.raw_alexnet.only %>% 
+             command = calc_perm_pval_object_by_pattern(preds = encoding.decoding_obj_events.raw_alexnet.only_sc %>% 
                                                           mutate(preds = map(preds, \(x) filter(x, animal_type != "food"))), 
-                                                        perms = perm.acc_encoding.decoding_obj_events.raw_alexnet.only)
+                                                        perms = perm.acc_encoding.decoding_obj_events.raw_alexnet.only_sc)
   ),
   tar_target(name = summary_auroc.cross_encoding.discrim.object,
              command = left_join(perm_auroc.cross_encoding.discrim.object, auroc.cross_encoding.discrim.object, 
@@ -1456,16 +1629,16 @@ subtargets_fmri_summary <- list(
              command = calc_controlled_perf(pattern.activation.controlled_alexnet)),
   tar_target(name = wb.connectivity_sig.sim,
              command = {
-               ceko2022 <- bind_rows(looming = read_csv(sig.sim_ceko2022_flynet.only),
-                                     object = read_csv(sig.sim_ceko2022_alexnet.only),
+               ceko2022 <- bind_rows(looming = read_csv(sig.sim_ceko2022_flynet.only_sc),
+                                     object = read_csv(sig.sim_ceko2022_alexnet.only_sc),
                                      .id = "model_type") %>% 
                  rename_with(.fn = \(x) paste0("aversive_", tolower(str_split_i(x, "_", 1))), .cols = -model_type) %>% 
                  group_by(model_type) %>% 
                  mutate(fold_num = 1:n()) %>% 
                  ungroup()
                
-               kragel2015 <- bind_rows(looming = read_csv(sig.sim_kragel2015_flynet.only),
-                                       object = read_csv(sig.sim_kragel2015_alexnet.only),
+               kragel2015 <- bind_rows(looming = read_csv(sig.sim_kragel2015_flynet.only_sc),
+                                       object = read_csv(sig.sim_kragel2015_alexnet.only_sc),
                                        .id = "model_type") %>% 
                  rename_with(.fn = \(x) str_split_i(x, "_", 3), .cols = -model_type) %>% 
                  rename(amusement = amused, anger = angry, contentment = content, fear = fearful, sadness = sad, surprise = surprised) %>% 
@@ -1474,8 +1647,8 @@ subtargets_fmri_summary <- list(
                  mutate(fold_num = 1:n()) %>% 
                  ungroup()
                
-               zhou2021 <- bind_rows(looming = read_csv(sig.sim_zhou2021_flynet.only),
-                                     object = read_csv(sig.sim_zhou2021_alexnet.only),
+               zhou2021 <- bind_rows(looming = read_csv(sig.sim_zhou2021_flynet.only_sc),
+                                     object = read_csv(sig.sim_zhou2021_alexnet.only_sc),
                                      .id = "model_type") %>% 
                  # it's a subjective fear signature but don't want the name to conflict with fear from kragel 2015
                  rename(VIFS_fear = VIFS.nii) %>% 
@@ -1496,13 +1669,210 @@ subtargets_fmri_summary <- list(
   )
 )
 
+### specifically for cell reports revisions ----
+subtargets_fmri_summary_revisions <- list(
+  tar_target(name = summary.ittikoch,
+             command = {
+               activations.ittikoch_raw %>% 
+                 map(\(x) read_csv(x) %>% 
+                       pivot_longer(cols = starts_with("X"), names_to = "pixel_num", values_to = "saliency") %>% 
+                       group_by(video) %>% 
+                       summarize(across(saliency, list(mean = mean, median = median, sd = sd))),
+                     .progress = "salience maps") %>% 
+                 bind_rows() %>% 
+                 left_join(stims %>% 
+                             select(video, has_loom, animal_type), by = "video")
+             }),
+  tar_target(name = cor_sc_antcblm,
+             command = {
+               sc_avg <- load_bold_mat_allsubs(bold.masked.sc_all.subs, avg_voxels = TRUE)
+               antcblm_avg <- load_bold_mat_allsubs(bold.masked.antcblm_all.subs, avg_voxels = TRUE)
+               
+               full_join(sc_avg, 
+                         antcblm_avg, 
+                         by = c("subj_num", "fold_num", "tr_num"), 
+                         suffix = c("_sc", "_antcblm")) %>% 
+                 group_by(subj_num) %>% 
+                 summarize(correlation = cor(voxel.1_sc, voxel.1_antcblm))
+             }
+  ),
+  tar_target(name = perf.encoding_flynet.alexnet.rbound_other.rois,
+             command = {
+               list(flynet.thal = perf.encoding.xval_flynet.only_thal,
+                    alexnet.thal = perf.encoding.xval_alexnet.only_thal,
+                    flynet.midb = perf.encoding.xval_flynet.only_midb,
+                    alexnet.midb = perf.encoding.xval_alexnet.only_midb) %>% 
+                 # must average across voxels to consider data across ROIs
+                 # but retain xval folds
+                 map(\(x) x %>% 
+                       rowwise() %>% 
+                       mutate(perf = mean(c_across(everything()))) %>% 
+                       ungroup() %>% 
+                       mutate(fold_num = 1:n()) %>% 
+                       select(fold_num, perf)) %>% 
+                 bind_rows(.id = "encoding_type_roi") %>% 
+                 separate_wider_delim(cols = encoding_type_roi, delim = ".", names = c("encoding_type", "roi"))
+             }),
+  tar_target(name = perf.encoding_flynet.alexnet.rbound_minus.antcblm,
+             command = {
+               list(flynet = perf.encoding.xval_flynet.minus.antcblm_sc,
+                    alexnet = perf.encoding.xval_alexnet.minus.antcblm_sc) %>% 
+                 # must average across voxels to consider data across ROIs
+                 # but retain xval folds
+                 map(\(x) x %>% 
+                       rowwise() %>% 
+                       mutate(perf = mean(c_across(everything()))) %>% 
+                       ungroup() %>% 
+                       mutate(fold_num = 1:n()) %>% 
+                       select(fold_num, perf)) %>% 
+                 bind_rows(.id = "encoding_type")
+             }),
+  tar_target(name = perf.encoding_ittikoch.rbound,
+             command = {
+               list(flynet = perf.encoding.xval_flynet.only_sc,
+                    alexnet = perf.encoding.xval_alexnet.only_sc,
+                    ittikoch = perf.encoding.xval_ittikoch.only_sc) %>% 
+                 # must average across voxels to consider data across ROIs
+                 # but retain xval folds
+                 map(\(x) x %>% 
+                       rowwise() %>% 
+                       mutate(perf = mean(c_across(everything()))) %>% 
+                       ungroup() %>% 
+                       mutate(fold_num = 1:n()) %>% 
+                       select(fold_num, perf)) %>% 
+                 bind_rows(.id = "encoding_type")
+             }),
+  tar_target(name = summary_perf.encoding_other.rois,
+             command = perf.encoding_flynet.alexnet.rbound_other.rois %>% 
+               group_by(roi, encoding_type) %>% 
+               mutate(r2 = perf^2) %>% 
+               rename(r = perf) %>% 
+               summarize(across(c(r, r2), summary_funs_across.subs)) %>% 
+               mutate(r_ci95.lower = r_mean - 1.96*r_se,
+                      r_ci95.upper = r_mean + 1.96*r_se,
+                      r_cohens.d = cohens.d.2(r_mean, r_sd, 0, r_sd),
+                      r2_cohens.d = cohens.d.2(r2_mean, r2_sd, 0, r2_sd))
+  ),
+  tar_target(name = summary_perf.encoding_minus.antcblm,
+             command = {
+               only <- perf.encoding_flynet.alexnet.rbound
+               minus.antcblm <- perf.encoding_flynet.alexnet.rbound_minus.antcblm
+               
+               out <- bind_rows(only = only,
+                                 minus.antcblm = minus.antcblm,
+                                 .id = "nuisance_type") %>% 
+               group_by(encoding_type, nuisance_type) %>% 
+               mutate(r2 = perf^2) %>% 
+               rename(r = perf) %>% 
+               summarize(across(c(r, r2), summary_funs_across.subs)) %>% 
+               mutate(r_ci95.lower = r_mean - 1.96*r_se,
+                      r_ci95.upper = r_mean + 1.96*r_se,
+                      r_cohens.d = cohens.d.2(r_mean, r_sd, 0, r_sd),
+                      r2_cohens.d = cohens.d.2(r2_mean, r2_sd, 0, r2_sd))
+               
+               diffs <- full_join(only, minus.antcblm,
+                                  by = c("encoding_type", "fold_num"),
+                                  suffix = c("_only", "_minus")) %>% 
+                 mutate(r = perf_only - perf_minus) %>% 
+                 group_by(encoding_type) %>% 
+                 summarize(across(c(r), summary_funs_across.subs)) %>% 
+                 mutate(r_ci95.lower = r_mean - 1.96*r_se,
+                        r_ci95.upper = r_mean + 1.96*r_se,
+                        r_cohens.d = cohens.d.2(r_mean, r_sd, 0, r_sd),
+                        nuisance_type = "diff")
+               
+               bind_rows(out, diffs)
+               }
+  ),
+  tar_target(name = summary_perf.encoding_ittikoch,
+             command = perf.encoding_ittikoch.rbound %>% 
+               group_by(encoding_type) %>% 
+               mutate(r2 = perf^2) %>% 
+               rename(r = perf) %>% 
+               summarize(across(c(r, r2), summary_funs_across.subs)) %>% 
+               mutate(r_ci95.lower = r_mean - 1.96*r_se,
+                      r_ci95.upper = r_mean + 1.96*r_se,
+                      r_cohens.d = cohens.d.2(r_mean, r_sd, 0, r_sd),
+                      r2_cohens.d = cohens.d.2(r2_mean, r2_sd, 0, r2_sd))
+  ),
+  tar_target(name = summary_perf.encoding_resid.ittikoch,
+             command = list(flynet = perf.encoding_flynet.resid.ittikoch_sc,
+                            alexnet = perf.encoding_alexnet.resid.ittikoch_sc) %>% 
+               # must average across voxels to consider data across ROIs
+               # but retain xval folds
+               map(\(x) x %>% 
+                     group_by(subj_num) %>% 
+                     summarize(perf_mean = mean(perf))) %>% 
+               bind_rows(.id = "encoding_type") %>% 
+               group_by(encoding_type) %>% 
+               mutate(r2 = perf_mean^2) %>% 
+               rename(r = perf_mean) %>% 
+               summarize(across(c(r, r2), summary_funs_across.subs)) %>% 
+               mutate(r_ci95.lower = r_mean - 1.96*r_se,
+                      r_ci95.upper = r_mean + 1.96*r_se,
+                      r_cohens.d = cohens.d.2(r_mean, r_sd, 0, r_sd),
+                      r2_cohens.d = cohens.d.2(r2_mean, r2_sd, 0, r2_sd))
+  ),
+  tar_target(name = summary_pred.encoding.minus.antcblm,
+             command = {
+               only <- bind_rows(flynet = load_encoding_pred_allsubs(pred.encoding.xval_flynet.only_sc), 
+                                 alexnet = load_encoding_pred_allsubs(pred.encoding.xval_alexnet.only_sc),
+                                 .id = "encoding_type") %>% 
+                 pivot_longer(cols = starts_with("voxel"), 
+                              names_to = "voxel_num", 
+                              values_to =  "bold_pred", 
+                              names_prefix = "voxel.")
+               
+               minus <- bind_rows(flynet = load_encoding_pred_allsubs(pred.encoding.xval_flynet.minus.antcblm_sc), 
+                                  alexnet = load_encoding_pred_allsubs(pred.encoding.xval_alexnet.minus.antcblm_sc),
+                                  .id = "encoding_type") %>% 
+                 pivot_longer(cols = starts_with("voxel"), 
+                              names_to = "voxel_num", 
+                              values_to =  "bold_pred", 
+                              names_prefix = "voxel.")
+               
+               only %>% 
+                 full_join(minus, 
+                           by = c("encoding_type", "subj_num", "tr_num", "voxel_num"), 
+                           suffix = c(".only", ".minus")) %>% 
+                 group_by(encoding_type, subj_num) %>% 
+                 summarize(correlation = cor(bold_pred.only, bold_pred.minus)) %>% 
+                 summarize(cor_mean = mean(correlation), 
+                           cor_sd = sd(correlation), 
+                           cor_se = sd(correlation)/sqrt(n()))
+               }
+             ),
+  tar_target(name = summary_pred.encoding.ittikoch,
+             command = {
+               only <- bind_rows(flynet = load_encoding_pred_allsubs(pred.encoding.xval_flynet.only_sc), 
+                                 alexnet = load_encoding_pred_allsubs(pred.encoding.xval_alexnet.only_sc),
+                                 ittikoch = load_encoding_pred_allsubs(pred.encoding.xval_ittikoch.only_sc),
+                                 .id = "encoding_type") %>% 
+                 pivot_longer(cols = starts_with("voxel"), 
+                              names_to = "voxel_num", 
+                              values_to =  "bold_pred", 
+                              names_prefix = "voxel.") %>% 
+                 pivot_wider(names_from = encoding_type, values_from = bold_pred, names_prefix = "bold_pred.")
+               
+               only %>% 
+                 group_by(subj_num) %>% 
+                 summarize(cor_flynet = cor(bold_pred.flynet, bold_pred.ittikoch),
+                           cor_alexnet = cor(bold_pred.alexnet, bold_pred.ittikoch)) %>% 
+                 summarize(across(starts_with("cor"), list(mean = mean, 
+                                                           sd = sd, 
+                                                           se = \(x) sd(x)/sqrt(length(x)))))
+             }
+  )
+)
+
 targets_fmri_across.subject <- make_targets_fmri_across.subject(targets_fmri_by.subject,
                                                                 contrast_names,
                                                                 task = "naturalistic",
                                                                 additional_targets = c(subtargets_fmri_across.subject,
                                                                                        subtargets_fmri_canlabtools_compare.models,
                                                                                        subtargets_fmri_canlabtools_combined,
-                                                                                       subtargets_fmri_summary))
+                                                                                       subtargets_fmri_summary,
+                                                                                       subtargets_fmri_summary_revisions))
 
 ## targets: behavioral data ----
 
@@ -1577,16 +1947,6 @@ colors_ms_objs <- pal_brewer(type = "qual",
                                      palette = "Dark2", 
                                      direction = -1)(8)[1:4]
 
-colors_ccn2025_loom <- "#8ace00"
-colors_ccn2025_loom.noloom <- c("Looming" = colors_ccn2025_loom, "No looming" = muted(colors_ccn2025_loom, l = 50, c = 30))
-colors_ccn2025_looming.object <- c("looming" = colors_ccn2025_loom, "object" = "#ff1fbc")
-colors_ccn2025_looming.object.conj <- c("looming > object" = colors_ccn2025_loom, 
-                                   "object > looming" = colors_ccn2025_looming.object[["object"]], # double bracket index to drop old name
-                                   "conjunction" = col_mix(colors_ccn2025_loom, colors_ccn2025_looming.object[["object"]]))
-
-colors_ccn2025_objs <- pal_seq_gradient(low = muted(colors_ccn2025_looming.object["object"]), 
-                                                high = colors_ccn2025_looming.object["object"])(seq(0, 1, length.out = 4))
-
 targets_plots <- list(
   tar_target(plot_ratings,
              command = beh %>% 
@@ -1632,21 +1992,6 @@ targets_plots <- list(
                theme_schematic +
                theme(aspect.ratio = 1/4)
   ),
-  tar_target(plot_schematic_unit.activation_1unit_flynet,
-             # since it's a schematic, just use subject 1
-             command = plot_sample_timecourse_activation(activations.flynet_sub.0001,
-                                                         units_to_plot = 100,
-                                                         # this is currently only for the CCN 2025 poster so /shrug
-                                                         line_color = colors_ccn2025_looming.object["looming"]) +
-               theme_schematic
-  ),
-  tar_target(plot_schematic_unit.activation_1unit_alexnet,
-             # since it's a schematic, just use subject 1
-             command = plot_sample_timecourse_activation(activations.alexnet_sub.0001,
-                                                         units_to_plot = 500,
-                                                         line_color = colors_ccn2025_looming.object["object"]) +
-               theme_schematic
-  ),
   tar_target(plot_schematic_encoding.bold.pred,
              command = list("looming" = pred.encoding.xval_flynet.only,
                             "object" = pred.encoding.xval_alexnet.only) %>% 
@@ -1667,11 +2012,11 @@ targets_plots <- list(
                theme_schematic
   ),
   tar_target(name = plot_schematic_encoding.betas_flynet,
-             command = plot_sample_encoding_betas(betas.encoding.xval_flynet.only) +
+             command = plot_sample_encoding_betas(betas.encoding.xval_flynet.only_sc) +
                theme_schematic
   ),
   tar_target(name = plot_schematic_encoding.betas_alexnet,
-             command = plot_sample_encoding_betas(betas.encoding.xval_alexnet.only,
+             command = plot_sample_encoding_betas(betas.encoding.xval_alexnet.only_sc,
                                                   viridis_option = "inferno") +
                theme_schematic
   ),
@@ -1724,7 +2069,7 @@ targets_plots <- list(
                theme(aspect.ratio = 1)
   ),
   tar_target(plot_encoding.auroc.looming_flynet_by.category,
-             command = encoding.decoding_loom_events.raw_flynet.only %>% 
+             command = encoding.decoding_loom_events.raw_flynet.only_sc %>% 
                plot_auroc(grouping_col = animal_type) +
                labs(color = "Object type") +
                this_theme +
@@ -1734,7 +2079,7 @@ targets_plots <- list(
                      legend.justification.inside = c(1,0))
   ),
   tar_target(plot_encoding.confusion.object_alexnet,
-             command = encoding.decoding_obj_events.raw_alexnet.only %>% 
+             command = encoding.decoding_obj_events.raw_alexnet.only_sc %>% 
                select(-coefs) %>% 
                unnest(preds) %>% 
                filter(animal_type != "food") %>% 
@@ -1745,7 +2090,7 @@ targets_plots <- list(
                theme(aspect.ratio = 1)
   ),
   tar_target(plot_encoding.auroc.object_alexnet,
-             command = encoding.decoding_obj_events.raw_alexnet.only %>% 
+             command = encoding.decoding_obj_events.raw_alexnet.only_sc %>% 
                plot_auroc(include_overall = FALSE) +
                labs(color = "Object type") +
                this_theme +
@@ -1942,6 +2287,22 @@ targets_plots_supp <- list(
                      legend.position = "inside",
                      legend.position.inside = c(0,1),
                      legend.justification.inside = c(0,1))
+  ),
+  # for cell rep revisions!
+  tar_target(name = plot_salience_by_category,
+             command = summary.ittikoch %>% 
+               filter(animal_type != "food", !is.na(animal_type)) %>% 
+               mutate(has_loom = case_match(has_loom, 
+                                            "Looming" ~ 1,
+                                            "No looming" ~ 0)) %>% 
+               ggplot(aes(x = animal_type, y = saliency_median, color = has_loom)) + 
+               geom_point(alpha = 0.4) + 
+               geom_pointrange(stat = "summary", fun.data = "mean_se") +
+    labs(title = "Video salience, calculated per Itti, Koch, & Niebur (2008)",
+         subtitle = "Each point = 1 video",
+         x = "Object category",
+         y = "Median salience per video",
+         color = "Loom?")
   )
 )
 
@@ -2208,10 +2569,16 @@ targets_figs.ms <- list(
                               device = svglite),
              format = "file"),
   tar_target(name = fig_ms_statmaps_pre.mricrogl,
-             command = vctrs::vec_c(flynet = statmap.wb.model.connectivity_flynet.only,
-                                    alexnet = statmap.wb.model.connectivity_alexnet.only,
-                                    conjunction = statmap.wb.model.connectivity_flynet.conj.alexnet,
-                                    difference = statmap.wb.model.connectivity_flynet.minus.alexnet,
+             command = vctrs::vec_c(conn_flynet_sc = statmap.wb.model.connectivity_flynet.only_sc,
+                                    conn_alexnet_sc = statmap.wb.model.connectivity_alexnet.only_sc,
+                                    conn_conjunction = statmap.wb.model.connectivity_flynet.conj.alexnet_sc,
+                                    conn_difference = statmap.wb.model.connectivity_flynet.minus.alexnet_sc,
+                                    perf_flynet_sc = statmap.perf.encoding_flynet.only_sc,
+                                    perf_alexnet_sc = statmap.perf.encoding_alexnet.only_sc,
+                                    perf_flynet_thal = statmap.perf.encoding_flynet.only_thal,
+                                    perf_alexnet_thal = statmap.perf.encoding_alexnet.only_thal,
+                                    perf_flynet_midb = statmap.perf.encoding_flynet.only_midb,
+                                    perf_alexnet_midb = statmap.perf.encoding_alexnet.only_midb,
                                     labels = wb.atlas_selected.rois),
              format = "file"),
   tar_target(fig_ms_plotgrid2,
@@ -2324,144 +2691,15 @@ targets_figs.ms.supp <- list(
                               width = 2400,
                               height = 2400,
                               units = "px"),
-             format = "file")
-)
-
-#### CCN 2025 figure image files ----
-
-targets_figs_ccn2025 <- list(
-  tar_target(fig_ccn2025_schematic_unit.activation_flynet,
-             command = ggsave(here::here("ignore", "figs", "ccn2025_schematic_activation_flynet.png"),
-                              plot = plot_schematic_unit.activation_1unit_flynet +
-                                labs(x = NULL, y = NULL),
-                              height = 400,
-                              width = 1200,
-                              units = "px",
-                              device = agg_png),
              format = "file"),
-  tar_target(fig_ccn2025_schematic_unit.activation_alexnet,
-             command = ggsave(here::here("ignore", "figs", "ccn2025_schematic_activation_alexnet.png"),
-                              plot = plot_schematic_unit.activation_1unit_alexnet +
-                                labs(x = NULL, y = NULL),
-                              height = 400,
-                              width = 1200,
-                              units = "px",
-                              device = agg_png),
-             format = "file"),
-  tar_target(fig_ccn2025_schematic_bold,
-             command = ggsave(here::here("ignore", "figs", "ccn2025_schematic_bold.png"),
-                              plot = plot_schematic_bold_1voxel +
-                                labs(x = NULL, y = NULL),
-                              height = 400,
-                              width = 1200,
-                              units = "px",
-                              device = agg_png),
-             format = "file"),
-  tar_target(name = fig_ccn2025_ratings,
-             command = ggsave(here::here("ignore", "figs", "ccn2025_ratings.png"),
-                              plot = plot_ratings_nofood +
-                                scale_color_manual(values = colors_ccn2025_loom.noloom) +
-                                guides(x = guide_axis(angle = 30)) +
-                                labs(subtitle = NULL,
-                                     x = NULL) +
-                                theme(legend.position = "inside", 
-                                      legend.position.inside = c(1,1), 
-                                      legend.justification = c(1,1)),
-                              width = 1800,
-                              height = 1100,
-                              units = "px",
-                              device = agg_png),
-             format = "file"),
-  tar_target(fig_ccn2025_encoding.perf_flynet.alexnet,
-             command = ggsave(here::here("ignore", "figs", "ccn2025_encoding_perf.png"),
-                              plot = plot_encoding.perf_flynet.alexnet +
-                                scale_color_manual(values = colors_ccn2025_looming.object) +
-                                # the labels don't need to be angled anymore
-                                guides(x = guide_axis()) +
-                                theme(axis.title.y = ggtext::element_markdown()),
-                              width = 1000,
-                              height = 1600,
-                              units = "px",
-                              device = agg_png),
-             format = "file"),
-  tar_target(fig_ccn2025_encoding.confusion.looming_flynet_by.category,
-             command = ggsave(here::here("ignore", "figs", "ccn2025_encoding.confusion.looming_by.category.png"),
-                              plot = plot_encoding.confusion.looming_flynet_by.category +
-                                guides(x = guide_axis(angle = 30)) +
-                                scale_fill_gradient(low = "white", high = colors_ccn2025_loom),
-                              height = 1300,
-                              width = 1500,
-                              units = "px",
-                              device = agg_png),
-             format = "file"),
-  tar_target(fig_ccn2025_encoding.confusion.object_alexnet,
-             command = ggsave(here::here("ignore", "figs", "ccn2025_encoding.confusion.object.png"),
-                              plot = plot_encoding.confusion.object_alexnet +
-                                scale_fill_gradient(low = "white", high = colors_ccn2025_looming.object["object"]),
+  tar_target(fig_ms.supp_salience_by_category,
+             command = ggsave(here::here("ignore", "figs", "ms.supp_naturalistic_salience.by.category.png"),
+                              plot = plot_salience_by_category +
+                                scale_color_manual(values = colors_ms_loom.noloom) +
+                                this_theme,
+                              width = 2000,
                               height = 1200,
-                              width = 1400,
-                              units = "px",
-                              device = agg_png),
-             format = "file"),
-  tar_target(fig_ccn2025_encoding.decoding.selfreport,
-             command = ggsave(here::here("ignore", "figs", "ccn2025_encoding_decoding_selfreport.png"),
-                              plot = plot_encoding.decoding.selfreport +
-                                scale_color_manual(values = c(colors_ccn2025_loom, colors_ccn2025_objs)
-                                ),
-                              width = 2800,
-                              height = 1000,
-                              units = "px",
-                              device = agg_png),
-             format = "file"),
-  tar_target(fig_ccn2025_conn_sig.sim,
-             command = ggsave(here::here("ignore", "figs", "ccn2025_conn.sig.sim.png"),
-                              plot = plot_conn_sig.sim + 
-                                # before the flip for readability. this adjusts the signatures axis which will go on y
-                                scale_x_discrete(limits = rev) + 
-                                coord_flip() +
-                                guides(x = guide_axis()) +
-                                scale_color_manual(values = colors_ccn2025_looming.object, na.translate = FALSE) +
-                                theme(legend.position = "inside",
-                                      legend.position.inside = c(1,0),
-                                      legend.justification.inside = c(1,0)),
-                              width = 2800,
-                              height = 1400,
-                              units = "px",
-                              device = agg_png),
-             format = "file"),
-  tar_target(name = statmap.wb.model.connectivity_alexnet.gt.flynet,
-             command = {
-               tvals_flynet <- vroom::vroom(wb.model.connectivity_flynet.only, 
-                                            delim = ",", 
-                                            col_names = FALSE, 
-                                            col_types = c(.default = "d")) %>% 
-                 summarize_tvals_pre_statmap() %>% 
-                 threshold_tvals_pre_statmap(threshold_p = .01)
-               
-               tvals_alexnet <- vroom::vroom(wb.model.connectivity_alexnet.only, 
-                                             delim = ",", 
-                                             col_names = FALSE, 
-                                             col_types = c(.default = "d")) %>% 
-                 summarize_tvals_pre_statmap() %>% 
-                 threshold_tvals_pre_statmap(threshold_p = .01)
-               
-               # there are many voxels where the difference is supra-threshold non-zero but the higher value isn't supra-threshold on its own
-               # so for the diff statmap, zero out voxels ahead of time where the higher value on its own doesn't exceed 0
-               # threshold_tvals_pre_statmap() retains only significant voxels as nonzero so this also has the effect 
-               # of only keeping a - b diff voxels where a is significantly positive
-               tvals_diff <- tvals.wb.model.connectivity_flynet.minus.alexnet
-               tvals_diff[tvals_diff > 0 & tvals_flynet <= 0] <- 0
-               tvals_diff[tvals_diff < 0 & tvals_alexnet <= 0] <- 0
-               # now flip it to get alexnet > flynet and then drop out all the flynet > alexnet voxels
-               tvals_diff <- -tvals_diff
-               tvals_diff[tvals_diff < 0] <- 0
-               
-               canlabtools_export_statmap(out_path = here::here("ignore", "outputs", sprintf("naturalistic_wb_conn_alexnet_gt_flynet_sc.nii")),
-                                          roi = NULL,
-                                          values = tvals_diff,
-                                          threshold_p = .01,
-                                          script = matlab_export_statmap)
-             },
+                              units = "px"),
              format = "file")
 )
 
@@ -2493,8 +2731,6 @@ list(
   targets_plots,
   targets_plots_supp,
   targets_figs,
-  # targets_figs_sans2025, # removed from tracking now that conference has passed (and other code has been updated around)
-  targets_figs_ccn2025,
   targets_figs.ms,
   targets_figs.ms.supp,
   targets_rmd
