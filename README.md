@@ -1,6 +1,12 @@
-# looming-fmri
+# Human superior colliculus pathways represent the form and motion of looming objects
 
-code for paper in formatting: "Human superior colliculus pathways represent the form and motion of looming objects", Thieu, Sethi, Aberman, & Kragel (in editorial) Cell Reports
+The superior colliculus is well known for its roles in visual orienting, oculomotor control, attention, and defensive behavior across species. Recently, [we predicted and found](https://www.cell.com/iscience/fulltext/S2589-0042(24)01108-8) that representations from a shallow convolutional neural network could predict defensive blinking to looming objects in infants and superior colliculus responses to optical expansion in adults. These findings suggest that the superior colliculus may coordinate defensive responses to looming in humans. 
+
+In this project, we tested whether the human superior colliculus functions in isolation during looming threat perception, or if it covaries with cortical networks involved in visual salience and object recognition. We used computational models of [looming detection](https://elifesciences.org/articles/72067), [visual saliency](https://ieeexplore.ieee.org/document/730558/), and [object recognition](https://papers.nips.cc/paper_files/paper/2012/hash/c399862d3b9d6b76c8436e924a68c45b-Abstract.html) to predict patterns of superior colliculus BOLD response acquired as participants viewed a series of naturalistic videos or performed a working memory task, and to examine their functional connectivity with the rest of the brain. A detailed description of this work is forthcoming. This repository provides the source code used to conduct these analyses.
+
+<p align="center">
+<img src="https://github.com/ecco-laboratory/looming-fmri-naturalistic/blob/main/GraphicalAbstract.png" width="400">
+</p>
 
 Please post any questions about the analysis repository as repo issues and we'll get to you as soon as we can. Enjoy!
 
@@ -111,3 +117,4 @@ Rscript -e 'source("run.R")'
 `run.R` attempts to call `targets::tar_make()` to execute all of the analysis code for Study 2 and then 1. (I have them written in that order because there are some Study 1 analyses that take Study 2 results as dependencies.) Hopefully it'll just... work!
 
 If you have slurm set up for your computing environment, I have set up the `_targets_*.R` scripts to run via slurm by default, to attempt to parallel the analysis operations. Please read the extra notes I've given in `run.R` if you want to attempt slurm, because I fear some of it is environment-specific.  I've tried to document everything I can but I make no promises about the slurm controller working for you out of the box!
+
