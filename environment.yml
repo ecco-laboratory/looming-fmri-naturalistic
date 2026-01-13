@@ -1,4 +1,4 @@
-name: thieu2026loom
+name: PATH/TO/CLONED/PROJECT/BASE/FOLDER/env
 channels:
   - pytorch
   - defaults
@@ -14,15 +14,15 @@ dependencies:
   - pycocotools
   - onnx2torch
   - ipykernel
-  - torchvision
+  - torchvision=0.13.1
   - h5py
   - tqdm
   - ipywidgets
   - av
   - cudatoolkit=11.6
-  - pytorch
+  - pytorch=1.12.1
   - tslearn
   - opencv
   - pytables
   - ffmpeg-python
-prefix: /opt/miniconda3/envs/thieu2026loom
+prefix: PATH/TO/CLONED/PROJECT/BASE/FOLDER/env
