@@ -55,6 +55,7 @@ I have done everything possible to have the setup scripts and analysis pipeline 
 1. In `.Rprofile`, where global variables are set for the R targets pipeline:
     1. Edit the `conda_path` variable to point _directly to the binary_ associated with the environment you cloned from our `environment.yml`. (It should point to the `/bin` inside the conda env folder.)
     1. Edit the `matlab_path` variable to point to your own Matlab install path.
+    1. Edit the `pandoc_path` variable to point to a folder on your machine containing a pandoc binary.
 
 ### Run first package setup script
 
