@@ -16,7 +16,7 @@ Please post any questions about the analysis repository as repo issues and we'll
 
 1. Clone the repo
 1. Install the following:
-    1. Matlab, ideally no older than R2024a
+    1. MATLAB, ideally no older than R2024a
     1. datalad
     1. conda
     1. R 4.4.1 and RStudio
@@ -42,8 +42,7 @@ Next, there are a couple things you'll have to set up manually before you can st
 
 The pipeline requires the following programs and command line tools that I can't really auto-download for you. Please download the following if you don't have them already:
 
-- **Matlab:** You just gotta have it, I'm sorry. The fMRI analyses use SPM and SPM-dependent tools under the hood. The analyses were originally written on Matlab R2024a. It's probably not worth it to install R2024a--if you already have a newer version, use that, or if you need Matlab for something else install the newest version and use that to reproduce this.
-- [**datalad:**](https://handbook.datalad.org/en/latest/intro/installation.html#) used for downloading the _studyforrest_ extension retinotopic mapping data underlying Study 1.
+- **MATLAB:** The fMRI analyses use SPM and SPM-dependent tools. The analyses were originally written on MATALB R2024a.
 - [**conda:**](https://docs.conda.io/projects/conda/en/stable/user-guide/install/index.html) used for Python analyses (the core neural network model is implemented through PyTorch) and maintaining the Python package environment
 - **[R](https://cran.r-project.org) (ideally 4.4.1) and [RStudio:](https://posit.co/download/rstudio-desktop/)** used for R analyses (all tabular data analysis, major statistics, and graphs across 3 studies)
 
