@@ -36,11 +36,11 @@ First, clone this repository to your favorite location on your computer. :3 The 
 
 ### Install/edit some dependencies manually
 
-Next, there are a couple things you'll have to set up manually before you can start running my helper scripts.
+Next, there are a couple things you will have to set up manually before you can start running the helper scripts.
 
 #### Some other programs & command line tools
 
-The pipeline requires the following programs and command line tools that I can't really auto-download for you. Please download the following if you don't have them already:
+The pipeline requires the following programs and command line tools. Please download the following if you do not have them already:
 
 - **MATLAB:** The fMRI analyses use SPM and SPM-dependent tools. The analyses were originally written on MATALB R2024a.
 - [**conda:**](https://docs.conda.io/projects/conda/en/stable/user-guide/install/index.html) used for Python analyses (the core neural network model is implemented through PyTorch) and maintaining the Python package environment
@@ -48,7 +48,7 @@ The pipeline requires the following programs and command line tools that I can't
 
 #### Manually edit some file paths
 
-I have done everything possible to have the setup scripts and analysis pipeline set up everything to relative path to specific subfolders of the project repo, so that you need to edit as few file paths as possible. However, there were still a couple paths I couldn't totally automate that you will need to manually change before you continue:
+The code uses relative paths to specific subfolders of the project repo, so that you will only need to edit a few file paths. 
 
 1. In `environment.yml`, set the env name and prefix to match the local path to your clone folder, or wherever you want to create the conda environment.
 1. In `.Rprofile`, where global variables are set for the R targets pipeline:
@@ -58,7 +58,7 @@ I have done everything possible to have the setup scripts and analysis pipeline 
 
 ### Run first package setup script
 
-I have included a `code/shell/init_project.sh` script that _should_ download the following pipeline dependencies for you. If you want to know what this setup script is doing, read on!
+I have included a `code/shell/init_project.sh` script that _should_ download the following pipeline dependencies for you. 
 
 #### Download additional Matlab libraries
 
@@ -67,7 +67,7 @@ I have included a `code/shell/init_project.sh` script that _should_ download the
 - [canlab/Neuroimaging_Pattern_Masks](https://github.com/canlab/Neuroimaging_Pattern_Masks)
 - [GBVS toolbox](http://www.animaclock.com/harel/share/gbvs.php)
 
-These are all distributed as folders of functions that have no installer beyond cloning the repo to your local and then adding the folder of functions to your Matlab path. The `shell/init_project.sh` setup script should `git clone` all of the libraries into the `ignore/libraries` subfolder for you. All of the Matlab scripts point to these local install paths, so they should then find the folders correctly without additional modification!
+These are all distributed as folders of functions that have no installer beyond cloning the repo to your local and then adding the folder of functions to your MATLAB path. The `shell/init_project.sh` setup script should `git clone` all of the libraries into the `ignore/libraries` subfolder for you. All of the MATLAB scripts point to these local install paths, so they should then find the folders correctly without additional modification!
 
 If you have one or more of these libraries already (most likely SPM12), you can change the setup script to use `ln -s` (on Mac or Linux) to symlink your existing SPM12 folder to appear under `ignore/libraries/spm12/` as well, instead of git cloning a duplicate copy of SPM12.
 
@@ -81,7 +81,7 @@ conda env create -f environment.yml
 
 for you.
 
-#### Download fMRI data with datalad
+#### Download fMRI data with Datalad
 
 **NOT YET AVAILABLE!** As soon as it is, we will update `init_project.sh` to download the fMRI dataset from OpenNeuro for you. Please mind that it will download into a subfolder of this project folder! If you want to download the large dataset to another folder (perchance on another drive more suited to large file storage), you can similarly change the setup script to use `ln -s` symlink the dataset to appear under `ignore/data/fmri`.
 
