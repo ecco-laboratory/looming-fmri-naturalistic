@@ -42,7 +42,7 @@ Next, there are a couple things you will have to set up manually before you can 
 
 The pipeline requires the following programs and command line tools. Please download the following if you do not have them already:
 
-- **MATLAB:** The fMRI analyses use SPM and SPM-dependent tools. The analyses were originally written on MATALB R2024a.
+- **MATLAB:** The fMRI analyses use SPM and SPM-dependent tools. The analyses were originally written on MATLAB R2024a.
 - [**conda:**](https://docs.conda.io/projects/conda/en/stable/user-guide/install/index.html) used for Python analyses (the core neural network model is implemented through PyTorch) and maintaining the Python package environment
 - **[R](https://cran.r-project.org) (ideally 4.4.1) and [RStudio:](https://posit.co/download/rstudio-desktop/)** used for R analyses (all tabular data analysis, major statistics, and graphs across 3 studies)
 
@@ -53,7 +53,7 @@ The code uses relative paths to specific subfolders of the project repo, so that
 1. In `environment.yml`, set the env name and prefix to match the local path to your clone folder, or wherever you want to create the conda environment.
 1. In `.Rprofile`, where global variables are set for the R targets pipeline:
     1. Edit the `conda_path` variable to point _directly to the binary_ associated with the environment you cloned from our `environment.yml`. (It should point to the `/bin` inside the conda env folder.)
-    1. Edit the `matlab_path` variable to point to your own Matlab install path.
+    1. Edit the `matlab_path` variable to point to your own MATLAB install path.
     1. Edit the `pandoc_path` variable to point to a folder on your machine containing a pandoc binary.
 
 ### Run first package setup script
